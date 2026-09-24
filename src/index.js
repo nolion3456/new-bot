@@ -96,7 +96,9 @@ function configEmbed(guildIdValue, channelIds) {
 
 async function persistGuildConfig(guild, fallbackChannelId = null) {
   const channelIds = auditChannelsByGuild.get(guild.id) || [];
-  const channel = await guild.channels.fetch(channelIds[0] || fallbackChannelId).catch(() => null);
+  const targetChannelId = channelIds[0] || fallbackChannelId;
+  if (!targetChannelId) return;
+  const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
   if (!channel?.isTextBased()) return;
   await channel.send({ embeds: [configEmbed(guild.id, channelIds)] }).catch((error) => {
     console.error(`Failed to persist audit configuration for guild ${guild.id}:`, error.message);
@@ -312,7 +314,7 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ ...auditPanelPayload(interaction.guildId, interaction.user.id), ephemeral: true });
     }
   } catch (error) {
-    console.error(`Command ${interaction.commandName} failed:`, error);
+    console.error(`Interaction ${interaction.commandName || interaction.customId || 'unknown'} failed:`, error);
     const message = { content: '执行指令时发生错误，请检查机器人权限与服务器设置。', ephemeral: true };
     if (interaction.replied || interaction.deferred) await interaction.followUp(message).catch(() => null);
     else await interaction.reply(message).catch(() => null);
