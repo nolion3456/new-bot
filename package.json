@@ -1,0 +1,19 @@
+{
+  "name": "new-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A modular multi-purpose Discord bot for Render",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "express": "^4.21.1"
+  }
+}
+
