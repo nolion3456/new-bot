@@ -1,6 +1,10 @@
 const express = require('express');
 const {
   AuditLogEvent,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelSelectMenuBuilder,
   ChannelType,
   Client,
   EmbedBuilder,
@@ -17,6 +21,7 @@ const port = Number(process.env.PORT || 10000);
 const maxAuditChannels = 3;
 const configMarker = 'new-bot-audit-config-v1';
 const auditChannelsByGuild = new Map();
+const selectedAuditChannelByUser = new Map();
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN. Add it to the runtime environment before starting the bot.');
@@ -29,32 +34,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('audit-channel')
     .setDescription('设置服务器审计日志频道（管理员）')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('add')
-        .setDescription('添加一个审计日志频道，最多三个')
-        .addChannelOption((option) =>
-          option
-            .setName('channel')
-            .setDescription('要接收审计日志的文字频道')
-            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-            .setRequired(true),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('remove')
-        .setDescription('移除一个审计日志频道')
-        .addChannelOption((option) =>
-          option
-            .setName('channel')
-            .setDescription('要移除的审计日志频道')
-            .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-            .setRequired(true),
-        ),
-    )
-    .addSubcommand((subcommand) => subcommand.setName('list').setDescription('查看当前审计日志频道')),
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -96,10 +76,9 @@ function configEmbed(guildIdValue, channelIds) {
     .setTimestamp();
 }
 
-async function persistGuildConfig(guild) {
+async function persistGuildConfig(guild, fallbackChannelId = null) {
   const channelIds = auditChannelsByGuild.get(guild.id) || [];
-  if (!channelIds.length) return;
-  const channel = await guild.channels.fetch(channelIds[0]).catch(() => null);
+  const channel = await guild.channels.fetch(channelIds[0] || fallbackChannelId).catch(() => null);
   if (!channel?.isTextBased()) return;
   await channel.send({ embeds: [configEmbed(guild.id, channelIds)] }).catch((error) => {
     console.error(`Failed to persist audit configuration for guild ${guild.id}:`, error.message);
@@ -124,6 +103,28 @@ async function restoreGuildConfig(guild) {
   const encoded = latest.embeds[0].footer.text.split(':')[2] || '';
   const ids = encoded.split(',').filter(Boolean).slice(0, maxAuditChannels);
   if (ids.length) auditChannelsByGuild.set(guild.id, ids);
+  else auditChannelsByGuild.delete(guild.id);
+}
+
+function auditPanelPayload(guildIdValue, userId, notice = null) {
+  const channelIds = auditChannelsByGuild.get(guildIdValue) || [];
+  const selectedId = selectedAuditChannelByUser.get(`${guildIdValue}:${userId}`);
+  const select = new ChannelSelectMenuBuilder()
+    .setCustomId('audit-channel-select')
+    .setPlaceholder(selectedId ? `已选择 <#${selectedId}>` : '先选择一个文字频道')
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('audit-channel-add').setLabel('添加选中频道').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('audit-channel-remove').setLabel('移除选中频道').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('audit-channel-list').setLabel('刷新当前配置').setStyle(ButtonStyle.Secondary),
+  );
+  return {
+    content: notice || '这是私密的后台审计频道面板。选择一个频道后，可添加或移除；最多同时保留 3 个频道。',
+    embeds: [configEmbed(guildIdValue, channelIds)],
+    components: [new ActionRowBuilder().addComponents(select), buttons],
+  };
 }
 
 async function registerCommands() {
@@ -168,9 +169,51 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu()) return;
 
   try {
+    if (interaction.isButton() || interaction.isChannelSelectMenu()) {
+      if (!interaction.inGuild()) return interaction.reply({ content: '此面板只能在服务器内使用。', ephemeral: true });
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+      }
+
+      const selectionKey = `${interaction.guildId}:${interaction.user.id}`;
+      if (interaction.isChannelSelectMenu()) {
+        selectedAuditChannelByUser.set(selectionKey, interaction.values[0]);
+        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已选择 <#${interaction.values[0]}>。现在可以点击“添加选中频道”或“移除选中频道”。`));
+      }
+
+      if (interaction.customId === 'audit-channel-list') {
+        const ids = auditChannelsByGuild.get(interaction.guildId) || [];
+        const summary = ids.length ? `当前后台审计频道（${ids.length}/${maxAuditChannels}）：${ids.map((id) => `<#${id}>`).join('、')}` : '尚未设置后台审计频道。';
+        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, summary));
+      }
+
+      const selectedId = selectedAuditChannelByUser.get(selectionKey);
+      if (!selectedId) return interaction.reply({ content: '请先在面板中选择一个文字频道。', ephemeral: true });
+      const channelIds = auditChannelsByGuild.get(interaction.guildId) || [];
+
+      if (interaction.customId === 'audit-channel-add') {
+        if (channelIds.includes(selectedId)) return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, '这个频道已经在后台列表中。'));
+        if (channelIds.length >= maxAuditChannels) return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `最多只能设置 ${maxAuditChannels} 个后台审计频道。`));
+        const updated = [...channelIds, selectedId];
+        auditChannelsByGuild.set(interaction.guildId, updated);
+        await persistGuildConfig(interaction.guild);
+        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已添加 <#${selectedId}>，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`));
+      }
+
+      if (interaction.customId === 'audit-channel-remove') {
+        if (!channelIds.includes(selectedId)) return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, '这个频道不在后台列表中。'));
+        const updated = channelIds.filter((id) => id !== selectedId);
+        if (updated.length) auditChannelsByGuild.set(interaction.guildId, updated);
+        else auditChannelsByGuild.delete(interaction.guildId);
+        await persistGuildConfig(interaction.guild, selectedId);
+        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已移除 <#${selectedId}>，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`));
+      }
+      return;
+    }
+
     if (interaction.commandName === 'ping') {
       return interaction.reply(`Pong！延迟 ${client.ws.ping}ms`);
     }
@@ -182,9 +225,7 @@ client.on('interactionCreate', async (interaction) => {
           '**可用指令**',
           '`/ping` 检查机器人是否在线并显示延迟',
           '`/help` 查看这份帮助信息',
-          '`/audit-channel add` 添加后台审计频道（管理员）',
-          '`/audit-channel remove` 移除后台审计频道（管理员）',
-          '`/audit-channel list` 查看后台审计频道（管理员）',
+          '`/audit-channel` 打开私密后台审计频道管理面板（管理员）',
         ].join('\n'),
       });
     }
@@ -195,37 +236,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
       }
 
-      const channelIds = auditChannelsByGuild.get(interaction.guildId) || [];
-      const action = interaction.options.getSubcommand();
-      if (action === 'list') {
-        return interaction.reply({
-          ephemeral: true,
-          content: channelIds.length
-            ? `当前后台审计频道（${channelIds.length}/${maxAuditChannels}）：${channelIds.map((id) => `<#${id}>`).join('、')}`
-            : '尚未设置后台审计频道。',
-        });
-      }
-
-      const channel = interaction.options.getChannel('channel', true);
-      if (action === 'add') {
-        if (channelIds.includes(channel.id)) return interaction.reply({ content: '这个频道已经在后台列表中。', ephemeral: true });
-        if (channelIds.length >= maxAuditChannels) {
-          return interaction.reply({ content: `最多只能设置 ${maxAuditChannels} 个后台审计频道。`, ephemeral: true });
-        }
-        const updated = [...channelIds, channel.id];
-        auditChannelsByGuild.set(interaction.guildId, updated);
-        await persistGuildConfig(interaction.guild);
-        return interaction.reply({ content: `已添加 ${channel}，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`, ephemeral: true });
-      }
-
-      if (action === 'remove') {
-        if (!channelIds.includes(channel.id)) return interaction.reply({ content: '这个频道不在后台列表中。', ephemeral: true });
-        const updated = channelIds.filter((id) => id !== channel.id);
-        if (updated.length) auditChannelsByGuild.set(interaction.guildId, updated);
-        else auditChannelsByGuild.delete(interaction.guildId);
-        if (updated.length) await persistGuildConfig(interaction.guild);
-        return interaction.reply({ content: `已移除 ${channel}，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`, ephemeral: true });
-      }
+      return interaction.reply({ ...auditPanelPayload(interaction.guildId, interaction.user.id), ephemeral: true });
     }
   } catch (error) {
     console.error(`Command ${interaction.commandName} failed:`, error);
