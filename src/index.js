@@ -202,8 +202,8 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isButton() || interaction.isChannelSelectMenu()) {
       if (!interaction.inGuild()) return interaction.reply({ content: '此面板只能在服务器内使用。', ephemeral: true });
-      if (interaction.guild.ownerId !== interaction.user.id) {
-        return interaction.reply({ content: '只有服务器拥有者可以操作这个后台面板。', ephemeral: true });
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        return interaction.reply({ content: '你需要“管理服务器”权限才能操作这个后台面板。', ephemeral: true });
       }
 
       const selectionKey = `${interaction.guildId}:${interaction.user.id}`;
@@ -264,7 +264,7 @@ client.on('interactionCreate', async (interaction) => {
           '**可用指令**',
           '`/ping` 检查机器人是否在线并显示延迟',
           '`/help` 查看这份帮助信息',
-          '`/audit-channel` 打开服务器拥有者专用的私密后台管理面板',
+          '`/audit-channel` 打开管理服务器权限专用的私密后台管理面板',
           '面板可用按钮切换要显示的日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
@@ -272,8 +272,8 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'audit-channel') {
       if (!interaction.inGuild()) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
-      if (interaction.guild.ownerId !== interaction.user.id) {
-        return interaction.reply({ content: '只有服务器拥有者可以打开这个后台面板。', ephemeral: true });
+      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+        return interaction.reply({ content: '你需要“管理服务器”权限才能打开这个后台面板。', ephemeral: true });
       }
 
       return interaction.reply({ ...auditPanelPayload(interaction.guildId, interaction.user.id), ephemeral: true });
