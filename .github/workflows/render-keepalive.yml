@@ -1,0 +1,21 @@
+name: Keep Render service awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Request Render health endpoint
+        run: |
+          curl --silent --show-error --location --max-time 120 \
+            --retry 2 --retry-delay 5 \
+            https://new-bot-spn4.onrender.com/health \
+            || true
+          echo "Keepalive request completed"
