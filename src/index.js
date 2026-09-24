@@ -2,8 +2,6 @@ const express = require('express');
 const {
   AuditLogEvent,
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   ChannelSelectMenuBuilder,
   ChannelType,
   Client,
@@ -13,6 +11,8 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } = require('discord.js');
 
 const token = process.env.DISCORD_TOKEN;
@@ -137,21 +137,30 @@ function auditPanelPayload(guildIdValue, userId, notice = null) {
     .setMaxValues(1)
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
   const enabled = enabledAuditEvents(guildIdValue);
-  const eventButtons = [0, 1].map((row) => new ActionRowBuilder().addComponents(
-    ...auditEventOptions.slice(row * 3, row * 3 + 3).map((option) => new ButtonBuilder()
-      .setCustomId(`audit-event-toggle-${option.value}`)
-      .setLabel(`${enabled.has(option.value) ? '✅' : '⬜'} ${option.label}`)
-      .setStyle(enabled.has(option.value) ? ButtonStyle.Success : ButtonStyle.Secondary)),
-  ));
-  const buttons = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('audit-channel-add').setLabel('添加选中频道').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('audit-channel-remove').setLabel('移除选中频道').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId('audit-channel-list').setLabel('刷新当前配置').setStyle(ButtonStyle.Secondary),
-  );
+  const eventOptions = auditEventOptions.map((option) => new StringSelectMenuOptionBuilder()
+    .setLabel(option.label)
+    .setValue(option.value)
+    .setDescription(option.description)
+    .setDefault(enabled.has(option.value)));
+  if (!enabled.size) eventOptions.push(new StringSelectMenuOptionBuilder().setLabel('关闭所有日志').setValue('none').setDescription('不发送任何审计事件').setDefault(true));
+  const eventSelect = new StringSelectMenuBuilder()
+    .setCustomId('audit-event-select')
+    .setPlaceholder('选择要显示的日志类型（可多选）')
+    .setMinValues(1)
+    .setMaxValues(auditEventOptions.length)
+    .addOptions(eventOptions);
+  const actionSelect = new StringSelectMenuBuilder()
+    .setCustomId('audit-action-select')
+    .setPlaceholder('选择后台频道操作')
+    .addOptions(
+      new StringSelectMenuOptionBuilder().setLabel('添加选中的频道').setValue('add').setDescription('将频道加入后台，最多三个'),
+      new StringSelectMenuOptionBuilder().setLabel('移除选中的频道').setValue('remove').setDescription('从后台列表移除频道'),
+      new StringSelectMenuOptionBuilder().setLabel('刷新当前配置').setValue('list').setDescription('查看当前后台频道'),
+    );
   return {
-    content: notice || '这是私密的后台审计频道面板。点击下方按钮即可开启或关闭日志类型，并管理最多 3 个后台频道。',
+    content: notice || '这是私密的后台审计频道面板。请使用三个下拉菜单选择日志类型、频道和操作。',
     embeds: [configEmbed(guildIdValue, channelIds)],
-    components: [new ActionRowBuilder().addComponents(select), ...eventButtons, buttons],
+    components: [new ActionRowBuilder().addComponents(eventSelect), new ActionRowBuilder().addComponents(select), new ActionRowBuilder().addComponents(actionSelect)],
   };
 }
 
@@ -197,30 +206,54 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu()) return;
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
-    if (interaction.isButton() || interaction.isChannelSelectMenu()) {
+    if (interaction.isButton() || interaction.isChannelSelectMenu() || interaction.isStringSelectMenu()) {
       if (!interaction.inGuild()) return interaction.reply({ content: '此面板只能在服务器内使用。', ephemeral: true });
       if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
         return interaction.reply({ content: '你需要“管理服务器”权限才能操作这个后台面板。', ephemeral: true });
       }
 
       const selectionKey = `${interaction.guildId}:${interaction.user.id}`;
-      if (interaction.isChannelSelectMenu()) {
-        selectedAuditChannelByUser.set(selectionKey, interaction.values[0]);
-        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已选择 <#${interaction.values[0]}>。现在可以点击“添加选中频道”或“移除选中频道”。`));
+      if (interaction.isStringSelectMenu() && interaction.customId === 'audit-event-select') {
+        const selectedEvents = interaction.values.includes('none') ? [] : interaction.values;
+        enabledAuditEventsByGuild.set(interaction.guildId, new Set(selectedEvents));
+        await interaction.deferUpdate();
+        await persistGuildConfig(interaction.guild);
+        const labels = auditEventOptions.filter((option) => selectedEvents.includes(option.value)).map((option) => option.label);
+        return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已更新后台显示内容：${labels.length ? labels.join('、') : '不显示任何事件'}。`));
       }
 
-      if (interaction.customId.startsWith('audit-event-toggle-')) {
-        const eventValue = interaction.customId.replace('audit-event-toggle-', '');
-        const enabled = new Set(enabledAuditEvents(interaction.guildId));
-        if (enabled.has(eventValue)) enabled.delete(eventValue);
-        else enabled.add(eventValue);
-        enabledAuditEventsByGuild.set(interaction.guildId, enabled);
-        await persistGuildConfig(interaction.guild);
-        const label = auditEventOptions.find((option) => option.value === eventValue)?.label || eventValue;
-        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `${label} 已${enabled.has(eventValue) ? '开启' : '关闭'}。`));
+      if (interaction.isChannelSelectMenu()) {
+        selectedAuditChannelByUser.set(selectionKey, interaction.values[0]);
+        return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已选择 <#${interaction.values[0]}>。现在可以在操作下拉菜单中选择添加、移除或刷新。`));
+      }
+
+      if (interaction.isStringSelectMenu() && interaction.customId === 'audit-action-select') {
+        const action = interaction.values[0];
+        if (action === 'list') {
+          const ids = auditChannelsByGuild.get(interaction.guildId) || [];
+          const summary = ids.length ? `当前后台审计频道（${ids.length}/${maxAuditChannels}）：${ids.map((id) => `<#${id}>`).join('、')}` : '尚未设置后台审计频道。';
+          return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, summary));
+        }
+        const selectedId = selectedAuditChannelByUser.get(selectionKey);
+        if (!selectedId) return interaction.reply({ content: '请先在频道下拉菜单中选择一个文字频道。', ephemeral: true });
+        const channelIds = auditChannelsByGuild.get(interaction.guildId) || [];
+        await interaction.deferUpdate();
+        if (action === 'add') {
+          if (channelIds.includes(selectedId)) return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, '这个频道已经在后台列表中。'));
+          if (channelIds.length >= maxAuditChannels) return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `最多只能设置 ${maxAuditChannels} 个后台审计频道。`));
+          auditChannelsByGuild.set(interaction.guildId, [...channelIds, selectedId]);
+          await persistGuildConfig(interaction.guild);
+          return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已添加 <#${selectedId}>。`));
+        }
+        if (!channelIds.includes(selectedId)) return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, '这个频道不在后台列表中。'));
+        const updated = channelIds.filter((id) => id !== selectedId);
+        if (updated.length) auditChannelsByGuild.set(interaction.guildId, updated);
+        else auditChannelsByGuild.delete(interaction.guildId);
+        await persistGuildConfig(interaction.guild, selectedId);
+        return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已移除 <#${selectedId}>。`));
       }
 
       if (interaction.customId === 'audit-channel-list') {
