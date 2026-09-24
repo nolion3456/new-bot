@@ -17,7 +17,7 @@ const {
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
-const port = Number(process.env.PORT || 10000);
+const port = Number(process.env.PORT || 3000);
 const maxAuditChannels = 3;
 const configMarker = 'new-bot-audit-config-v2';
 const auditEventOptions = [
@@ -57,7 +57,7 @@ const client = new Client({
 });
 
 const app = express();
-app.get('/', (_req, res) => res.status(200).json({ status: 'ok', service: 'discord-bot' }));
+app.get('/', (_req, res) => res.status(200).send('Bot is alive'));
 app.get('/health', (_req, res) =>
   res.status(client.isReady() ? 200 : 503).json({ status: client.isReady() ? 'ready' : 'starting' }),
 );
