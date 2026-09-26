@@ -33,6 +33,7 @@ const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.valu
 const auditChannelsByGuild = new Map();
 const enabledAuditEventsByGuild = new Map();
 const selectedAuditChannelByUser = new Map();
+const recentAuditDeliveries = new Map();
 
 if (!token) {
   console.error('Missing DISCORD_TOKEN. Add it to the runtime environment before starting the bot.');
@@ -178,14 +179,29 @@ async function registerCommands() {
 }
 
 async function sendAudit(guild, embed) {
-  const channelIds = auditChannelsByGuild.get(guild.id) || [];
+  const channelIds = [...new Set(auditChannelsByGuild.get(guild.id) || [])];
   if (!channelIds.length) return;
+  const embedData = embed.toJSON();
+  const fingerprint = JSON.stringify({
+    title: embedData.title,
+    description: embedData.description,
+    fields: embedData.fields,
+    footer: embedData.footer,
+  });
+  const now = Date.now();
   for (const channelId of channelIds) {
+    const deliveryKey = `${guild.id}:${channelId}:${fingerprint}`;
+    const previousDelivery = recentAuditDeliveries.get(deliveryKey);
+    if (previousDelivery && now - previousDelivery < 5000) continue;
+    recentAuditDeliveries.set(deliveryKey, now);
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel?.isTextBased()) continue;
     await channel.send({ embeds: [embed] }).catch((error) => {
       console.error(`Failed to send audit log to ${channelId}:`, error.message);
     });
+  }
+  for (const [key, timestamp] of recentAuditDeliveries) {
+    if (now - timestamp > 30_000) recentAuditDeliveries.delete(key);
   }
 }
 
