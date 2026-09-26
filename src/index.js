@@ -171,11 +171,25 @@ function auditPanelPayload(guildIdValue, userId, notice = null) {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
-  const route = guildId
-    ? Routes.applicationGuildCommands(client.user.id, guildId)
-    : Routes.applicationCommands(client.user.id);
+  const commandNames = new Set(commands.map((command) => command.name));
+  const globalRoute = Routes.applicationCommands(client.user.id);
+  const globalCommands = await rest.get(globalRoute);
+  if (guildId) {
+    for (const command of globalCommands) {
+      if (commandNames.has(command.name)) await rest.delete(`${globalRoute}/${command.id}`);
+    }
+  } else {
+    for (const guild of client.guilds.cache.values()) {
+      const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
+      const guildCommands = await rest.get(guildRoute);
+      for (const command of guildCommands) {
+        if (commandNames.has(command.name)) await rest.delete(`${guildRoute}/${command.id}`);
+      }
+    }
+  }
+  const route = guildId ? Routes.applicationGuildCommands(client.user.id, guildId) : globalRoute;
   await rest.put(route, { body: commands });
-  console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId}` : 'globally'}.`);
+  console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId} (old global copies removed)` : 'globally (old guild copies removed)'}.`);
 }
 
 async function sendAudit(guild, embed) {
