@@ -28,6 +28,12 @@ const auditEventOptions = [
   { value: 'messageDelete', label: '删除文字', description: '消息发送与删除信息' },
   { value: 'memberJoin', label: '成员加入', description: '成员加入与帐号创建时间' },
   { value: 'memberLeave', label: '成员离开', description: '成员离开与帐号创建时间' },
+  { value: 'mute', label: '成员被禁言', description: '显示执行者、对象与禁言时长' },
+  { value: 'unmute', label: '成员被解除禁言', description: '显示执行者与对象' },
+  { value: 'ban', label: '成员被封禁', description: '显示执行者与被封禁成员' },
+  { value: 'unban', label: '成员被解除封禁', description: '显示执行者与成员' },
+  { value: 'kick', label: '成员被踢出', description: '显示执行者与被踢成员' },
+  { value: 'unkick', label: '解除踢出（Discord无此事件）', description: 'Discord 不提供 unkick 审计事件' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
 const auditChannelsByGuild = new Map();
@@ -69,6 +75,16 @@ app.listen(port, '0.0.0.0', () => console.log(`Health server listening on port $
 function clip(value, max = 1000) {
   const text = String(value ?? '(无内容)');
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+
+function formatTimeoutDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [days ? `${days}天` : '', hours ? `${hours}小时` : '', minutes ? `${minutes}分钟` : '', seconds ? `${seconds}秒` : '']
+    .filter(Boolean).join(' ') || '少于 1 秒';
 }
 
 function code(value) {
@@ -374,6 +390,29 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     await sendAudit(newMember.guild, embed, `nickname:${newMember.id}:${oldMember.nickname || ''}:${newMember.nickname || ''}`);
   }
 
+  const oldTimeout = oldMember.communicationDisabledUntilTimestamp || null;
+  const newTimeout = newMember.communicationDisabledUntilTimestamp || null;
+  if (oldTimeout !== newTimeout) {
+    const muted = Boolean(newTimeout && newTimeout > Date.now());
+    const eventType = muted ? 'mute' : 'unmute';
+    if (enabled.has(eventType)) {
+      const executor = await findRecentExecutor(newMember.guild, AuditLogEvent.MemberUpdate, newMember.id);
+      const embed = new EmbedBuilder()
+        .setColor(muted ? 0xe67e22 : 0x2ecc71)
+        .setTitle(muted ? '成员被禁言' : '成员解除禁言')
+        .addFields(
+          { name: '成员', value: `${newMember.user.tag} (<@${newMember.id}>)`, inline: false },
+          { name: '执行者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法从审计日志确认', inline: false },
+          ...(muted ? [
+            { name: '禁言结束时间', value: `<t:${Math.floor(newTimeout / 1000)}:F>`, inline: true },
+            { name: '禁言时长', value: formatTimeoutDuration(newTimeout - Date.now()), inline: true },
+          ] : []),
+        )
+        .setTimestamp();
+      await sendAudit(newMember.guild, embed, `${eventType}:${newMember.id}:${newTimeout || 'none'}`);
+    }
+  }
+
   if (!enabled.has('roleChange')) return;
   const added = newMember.roles.cache.filter((role) => !oldMember.roles.cache.has(role.id));
   const removed = oldMember.roles.cache.filter((role) => !newMember.roles.cache.has(role.id));
@@ -407,7 +446,23 @@ client.on('guildMemberAdd', async (member) => {
 });
 
 client.on('guildMemberRemove', async (member) => {
-  if (!auditChannelsByGuild.has(member.guild.id) || !enabledAuditEvents(member.guild.id).has('memberLeave')) return;
+  if (!auditChannelsByGuild.has(member.guild.id)) return;
+  const enabled = enabledAuditEvents(member.guild.id);
+  const kickExecutor = await findRecentExecutor(member.guild, AuditLogEvent.MemberKick, member.id);
+  if (kickExecutor) {
+    if (!enabled.has('kick')) return;
+    const embed = new EmbedBuilder()
+      .setColor(0xe74c3c)
+      .setTitle('成员被踢出')
+      .addFields(
+        { name: '被踢成员', value: `${member.user.tag} (<@${member.id}>)`, inline: false },
+        { name: '执行者', value: `${kickExecutor.tag} (<@${kickExecutor.id}>)`, inline: false },
+        { name: '帐号创建时间', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:F>`, inline: true },
+      )
+      .setTimestamp();
+    return sendAudit(member.guild, embed, `kick:${member.id}:${kickExecutor.id}`);
+  }
+  if (!enabled.has('memberLeave')) return;
   const embed = new EmbedBuilder()
     .setColor(0xe67e22)
     .setTitle('成员离开服务器')
@@ -418,6 +473,35 @@ client.on('guildMemberRemove', async (member) => {
     )
     .setTimestamp();
   await sendAudit(member.guild, embed, `member-leave:${member.id}`);
+});
+
+client.on('guildBanAdd', async (ban) => {
+  if (!auditChannelsByGuild.has(ban.guild.id) || !enabledAuditEvents(ban.guild.id).has('ban')) return;
+  const executor = await findRecentExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
+  const embed = new EmbedBuilder()
+    .setColor(0x992d22)
+    .setTitle('成员被封禁')
+    .addFields(
+      { name: '被封禁成员', value: `${ban.user.tag} (<@${ban.user.id}>)`, inline: false },
+      { name: '执行者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法从审计日志确认', inline: false },
+      { name: '帐号创建时间', value: `<t:${Math.floor(ban.user.createdTimestamp / 1000)}:F>`, inline: true },
+    )
+    .setTimestamp();
+  await sendAudit(ban.guild, embed, `ban:${ban.user.id}`);
+});
+
+client.on('guildBanRemove', async (ban) => {
+  if (!auditChannelsByGuild.has(ban.guild.id) || !enabledAuditEvents(ban.guild.id).has('unban')) return;
+  const executor = await findRecentExecutor(ban.guild, AuditLogEvent.MemberBanRemove, ban.user.id);
+  const embed = new EmbedBuilder()
+    .setColor(0x27ae60)
+    .setTitle('成员解除封禁')
+    .addFields(
+      { name: '成员', value: `${ban.user.tag} (<@${ban.user.id}>)`, inline: false },
+      { name: '执行者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法从审计日志确认', inline: false },
+    )
+    .setTimestamp();
+  await sendAudit(ban.guild, embed, `unban:${ban.user.id}`);
 });
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {

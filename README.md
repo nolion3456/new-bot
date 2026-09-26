@@ -37,13 +37,15 @@
 
 执行 `/audit-channel` 后，面板提供三个下拉菜单：第一个选择要显示的日志类型（可多选），第二个选择后台文字频道，第三个选择添加、移除或刷新操作。最多同时配置 3 个后台审计频道。可选日志类型包括身份组变动、昵称变动、消息编辑、消息删除、成员加入和成员离开；关闭某项后，该项事件不会发送到后台频道。
 
-成员加入和离开日志会显示成员帐号创建时间、成员标识以及加入或离开时间。消息编辑日志会显示编辑前文字、编辑后文字、发送者、频道、发送时间和编辑时间。消息删除日志会显示发送者、删除者、频道、发送时间和删除时间。
+成员加入和离开日志会显示成员帐号创建时间、成员标识以及加入或离开时间。新增后台日志包括成员被禁言、解除禁言、封禁、解除封禁和踢出，并显示目标成员与执行者；禁言日志还会显示禁言结束时间和禁言时长。消息编辑日志会显示编辑前文字、编辑后文字、发送者、频道、发送时间和编辑时间。消息删除日志会显示发送者、删除者、频道、发送时间和删除时间。
+
+Discord 没有“unkick/解除踢出”这个审计事件：踢出后成员重新加入只能算成员加入，无法可靠判断是否属于“解除踢出”，因此该选项会在面板中说明不可用，不会伪造日志。
 
 ## Discord Developer Portal 设置
 
 为了读取成员进出、消息编辑与删除事件，请开启：**Server Members Intent** 和 **Message Content Intent**。
 
-邀请机器人时，至少授予 View Channels、Send Messages、Embed Links、Read Message History、View Audit Log 和 Use External Emojis 权限。使用管理指令需要 Discord 的 **Manage Server（管理服务器）** 权限。
+邀请机器人时，至少授予 View Channels、Send Messages、Embed Links、Read Message History、View Audit Log、Moderate Members、Ban Members 和 Kick Members 权限。使用管理指令需要 Discord 的 **Manage Server（管理服务器）** 权限。
 
 ## 本地运行
 
