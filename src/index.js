@@ -14,6 +14,7 @@ const {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
+const { giveawayCommand, setupGiveaways } = require('./giveaways');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -45,6 +46,7 @@ const commands = [
     .setName('audit-channel')
     .setDescription('设置服务器审计日志频道（管理员）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
+  giveawayCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -208,6 +210,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && interaction.customId.startsWith('giveaway:')) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -300,7 +303,9 @@ client.on('interactionCreate', async (interaction) => {
           '`/ping` 检查机器人是否在线并显示延迟',
           '`/help` 查看这份帮助信息',
           '`/audit-channel` 打开管理服务器权限专用的私密后台管理面板',
-          '面板可用按钮切换要显示的日志类型，并管理最多 3 个后台频道',
+          '`/giveaway create` 创建抽奖并打开发布前私密设置面板',
+          '`/giveaway end|reroll|list|delete` 管理抽奖活动',
+          '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
     }
@@ -341,6 +346,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 
   if (!enabled.has('roleChange')) return;
   const added = newMember.roles.cache.filter((role) => !oldMember.roles.cache.has(role.id));
+  const removed = oldMember.roles.cache.filter((role) => !newMember.roles.cache.has(role.id));
   if (!added.size && !removed.size) return;
   const executor = await findRecentExecutor(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id);
   const embed = new EmbedBuilder()
@@ -423,4 +429,5 @@ client.on('messageDelete', async (message) => {
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
+setupGiveaways(client);
 client.login(token);
