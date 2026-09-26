@@ -30,7 +30,7 @@ const giveawayCommand = new SlashCommandBuilder()
     .addStringOption((option) => option.setName('duration').setDescription('持续时间，例如 1d、1h、10m').setRequired(true))
     .addIntegerOption((option) => option.setName('winners').setDescription('获奖人数').setMinValue(1).setMaxValue(50).setRequired(true))
     .addStringOption((option) => option.setName('prize').setDescription('奖品').setMaxLength(256).setRequired(true))
-    .addChannelOption((option) => option.setName('channel').setDescription('抽奖频道').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setRequired(true)))
+    .addChannelOption((option) => option.setName('channel').setDescription('抽奖频道（不填写则使用当前频道）').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)))
   .addSubcommand((subcommand) => subcommand.setName('end').setDescription('提前结束抽奖并抽取获奖者').addStringOption((option) => option.setName('message_id').setDescription('抽奖消息 ID').setRequired(true)))
   .addSubcommand((subcommand) => subcommand.setName('reroll').setDescription('重新抽取获奖者').addStringOption((option) => option.setName('message_id').setDescription('已结束抽奖消息 ID').setRequired(true)))
   .addSubcommand((subcommand) => subcommand.setName('list').setDescription('列出服务器正在进行的抽奖'))
@@ -80,13 +80,13 @@ function giveawayEmbed(giveaway) {
   const embed = new EmbedBuilder()
     .setColor(giveaway.status === 'active' ? 0xffc107 : 0x747f8d)
     .setTitle('🎉 抽奖活动 🎉')
-    .setDescription(`**奖品**\n${giveaway.prize}\n\n点击下方 🎉 按钮参加抽奖！`)
+    .setDescription(`**奖品**\n${giveaway.prize}\n\n点击下方 🎉 按钮参加抽奖！${giveaway.extraRoleId ? '\n拥有指定身份组的成员中奖权重为 2 倍。' : ''}`)
     .addFields(
       { name: '获奖人数', value: String(giveaway.winners), inline: true },
       { name: '参加人数', value: String(entries), inline: true },
       { name: '剩余时间', value: statusText(giveaway), inline: true },
     )
-    .setFooter({ text: giveaway.extraRoleId ? '需要指定身份组才能参加' : '所有成员均可参加' })
+    .setFooter({ text: giveaway.extraRoleId ? '指定身份组成员中奖权重 ×2，其他成员也可参加' : '所有成员中奖权重相同' })
     .setTimestamp(new Date(giveaway.createdAt));
   if (giveaway.winnersList?.length) embed.addFields({ name: '获奖者', value: giveaway.winnersList.map((id) => `<@${id}>`).join('、') });
   return embed;
@@ -125,15 +125,26 @@ function previewComponents(draft) {
   return [new ActionRowBuilder().addComponents(roleSelect), new ActionRowBuilder().addComponents(actionSelect)];
 }
 
-function pickWinners(entries, count, excluded = []) {
+function pickWinners(entries, count, weights = {}, excluded = []) {
   const pool = entries.filter((id) => !excluded.includes(id));
   const source = pool.length >= count ? pool : entries;
   const copy = [...new Set(source)];
-  for (let index = copy.length - 1; index > 0; index -= 1) {
-    const other = crypto.randomInt(index + 1);
-    [copy[index], copy[other]] = [copy[other], copy[index]];
+  const winners = [];
+  while (copy.length && winners.length < count) {
+    const totalWeight = copy.reduce((total, id) => total + Math.max(1, Number(weights[id] || 1)), 0);
+    let selected = crypto.randomInt(totalWeight);
+    let selectedIndex = 0;
+    for (let index = 0; index < copy.length; index += 1) {
+      selected -= Math.max(1, Number(weights[copy[index]] || 1));
+      if (selected < 0) {
+        selectedIndex = index;
+        break;
+      }
+    }
+    winners.push(copy[selectedIndex]);
+    copy.splice(selectedIndex, 1);
   }
-  return copy.slice(0, count);
+  return winners;
 }
 
 async function fetchMessage(client, giveaway) {
@@ -164,7 +175,7 @@ async function endGiveaway(client, giveaway, manual) {
   if (giveaway.status !== 'active') return false;
   giveaway.status = 'ended';
   giveaway.endedAt = Date.now();
-  giveaway.winnersList = pickWinners(giveaway.entries, giveaway.winners);
+  giveaway.winnersList = pickWinners(giveaway.entries, giveaway.winners, giveaway.weights || {});
   saveData();
   if (timers.has(giveaway.id)) clearTimeout(timers.get(giveaway.id));
   const message = await fetchMessage(client, giveaway);
@@ -182,7 +193,7 @@ async function endGiveaway(client, giveaway, manual) {
 async function rerollGiveaway(client, giveaway) {
   if (giveaway.status !== 'ended') return false;
   const previous = giveaway.winnersList || [];
-  giveaway.winnersList = pickWinners(giveaway.entries, giveaway.winners, previous);
+  giveaway.winnersList = pickWinners(giveaway.entries, giveaway.winners, giveaway.weights || {}, previous);
   saveData();
   const message = await fetchMessage(client, giveaway);
   if (message) {
@@ -207,7 +218,7 @@ async function handleGiveawayInteraction(client, interaction) {
     if (subcommand === 'create') {
       const durationMs = parseDuration(interaction.options.getString('duration'));
       if (!durationMs) return interaction.reply({ content: '持续时间格式无效。请使用例如 `10m`、`1h`、`1d`，范围为 10 秒至 365 天。', ephemeral: true });
-      const channel = interaction.options.getChannel('channel');
+      const channel = interaction.options.getChannel('channel') || interaction.channel;
       if (!channel?.isTextBased()) return interaction.reply({ content: '请选择文字频道。', ephemeral: true });
       const draft = {
         guildId: interaction.guildId,
@@ -217,6 +228,7 @@ async function handleGiveawayInteraction(client, interaction) {
         winners: interaction.options.getInteger('winners'),
         prize: interaction.options.getString('prize'),
         extraRoleId: null,
+        publishing: false,
       };
       drafts.set(draftKey(interaction), draft);
       return interaction.reply({ content: '请检查设置并选择额外入场身份组，然后在操作菜单发布。', embeds: [previewEmbed(draft)], components: previewComponents(draft), ephemeral: true });
@@ -263,6 +275,8 @@ async function handleGiveawayInteraction(client, interaction) {
       drafts.delete(draftKey(interaction));
       return interaction.update({ content: '已取消抽奖创建。', embeds: [], components: [] });
     }
+    if (draft.publishing) return interaction.reply({ content: '这个抽奖正在发布，请不要重复选择发布。', ephemeral: true });
+    draft.publishing = true;
     const giveaway = {
       id: crypto.randomUUID(),
       guildId: draft.guildId,
@@ -276,13 +290,20 @@ async function handleGiveawayInteraction(client, interaction) {
       creatorId: draft.creatorId,
       extraRoleId: draft.extraRoleId,
       entries: [],
+      weights: {},
       winnersList: [],
       status: 'active',
     };
     const channel = await client.channels.fetch(draft.channelId).catch(() => null);
-    if (!channel?.isTextBased()) return interaction.reply({ content: '无法访问指定抽奖频道，请检查 Bot 的频道权限。', ephemeral: true });
+    if (!channel?.isTextBased()) {
+      draft.publishing = false;
+      return interaction.reply({ content: '无法访问指定抽奖频道，请检查 Bot 的频道权限。', ephemeral: true });
+    }
     const message = await channel.send({ embeds: [giveawayEmbed(giveaway)], components: giveawayComponents(giveaway) }).catch(() => null);
-    if (!message) return interaction.reply({ content: '发布抽奖失败，请检查 Bot 是否有发送消息、嵌入链接和使用按钮权限。', ephemeral: true });
+    if (!message) {
+      draft.publishing = false;
+      return interaction.reply({ content: '发布抽奖失败，请检查 Bot 是否有发送消息、嵌入链接和使用按钮权限。', ephemeral: true });
+    }
     giveaway.messageId = message.id;
     giveaways.set(giveaway.id, giveaway);
     saveData();
@@ -295,9 +316,10 @@ async function handleGiveawayInteraction(client, interaction) {
     const giveawayId = interaction.customId.split(':')[2];
     const giveaway = giveaways.get(giveawayId);
     if (!giveaway || giveaway.status !== 'active') return interaction.reply({ content: '这个抽奖已经结束或不存在。', ephemeral: true });
-    if (giveaway.extraRoleId && !interaction.member.roles.cache.has(giveaway.extraRoleId)) return interaction.reply({ content: `你需要身份组 <@&${giveaway.extraRoleId}> 才能参加这个抽奖。`, ephemeral: true });
     if (giveaway.entries.includes(interaction.user.id)) return interaction.reply({ content: '你已经参加这个抽奖了。', ephemeral: true });
     giveaway.entries.push(interaction.user.id);
+    giveaway.weights = giveaway.weights || {};
+    giveaway.weights[interaction.user.id] = giveaway.extraRoleId && interaction.member.roles.cache.has(giveaway.extraRoleId) ? 2 : 1;
     saveData();
     await interaction.update({ embeds: [giveawayEmbed(giveaway)], components: giveawayComponents(giveaway) });
     return;
