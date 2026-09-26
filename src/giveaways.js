@@ -317,11 +317,16 @@ async function handleGiveawayInteraction(client, interaction) {
     const giveaway = giveaways.get(giveawayId);
     if (!giveaway || giveaway.status !== 'active') return interaction.reply({ content: '这个抽奖已经结束或不存在。', ephemeral: true });
     if (giveaway.entries.includes(interaction.user.id)) return interaction.reply({ content: '你已经参加这个抽奖了。', ephemeral: true });
+    const member = interaction.member?.roles?.cache
+      ? interaction.member
+      : await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+    if (!member) return interaction.reply({ content: '无法读取你的服务器成员资料，请稍后再试。', ephemeral: true });
     giveaway.entries.push(interaction.user.id);
     giveaway.weights = giveaway.weights || {};
-    giveaway.weights[interaction.user.id] = giveaway.extraRoleId && interaction.member.roles.cache.has(giveaway.extraRoleId) ? 2 : 1;
+    giveaway.weights[interaction.user.id] = giveaway.extraRoleId && member.roles.cache.has(giveaway.extraRoleId) ? 2 : 1;
     saveData();
     await interaction.update({ embeds: [giveawayEmbed(giveaway)], components: giveawayComponents(giveaway) });
+    await interaction.followUp({ content: `你已成功参加抽奖！${giveaway.weights[interaction.user.id] === 2 ? '你的中奖权重为 2 倍。' : ''}`, ephemeral: true });
     return;
   }
   return false;

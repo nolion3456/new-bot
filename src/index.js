@@ -192,11 +192,11 @@ async function registerCommands() {
   console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId} (old global copies removed)` : 'globally (old guild copies removed)'}.`);
 }
 
-async function sendAudit(guild, embed) {
+async function sendAudit(guild, embed, eventKey = null) {
   const channelIds = [...new Set(auditChannelsByGuild.get(guild.id) || [])];
   if (!channelIds.length) return;
   const embedData = embed.toJSON();
-  const fingerprint = JSON.stringify({
+  const fingerprint = eventKey || JSON.stringify({
     title: embedData.title,
     description: embedData.description,
     fields: embedData.fields,
@@ -206,7 +206,7 @@ async function sendAudit(guild, embed) {
   for (const channelId of channelIds) {
     const deliveryKey = `${guild.id}:${channelId}:${fingerprint}`;
     const previousDelivery = recentAuditDeliveries.get(deliveryKey);
-    if (previousDelivery && now - previousDelivery < 5000) continue;
+    if (previousDelivery && now - previousDelivery < 30_000) continue;
     recentAuditDeliveries.set(deliveryKey, now);
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel?.isTextBased()) continue;
@@ -371,7 +371,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
         { name: '操作者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '成员本人或无法确认', inline: false },
       )
       .setTimestamp();
-    await sendAudit(newMember.guild, embed);
+    await sendAudit(newMember.guild, embed, `nickname:${newMember.id}:${oldMember.nickname || ''}:${newMember.nickname || ''}`);
   }
 
   if (!enabled.has('roleChange')) return;
@@ -389,7 +389,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
       { name: '操作者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法确认', inline: false },
     )
     .setTimestamp();
-  await sendAudit(newMember.guild, embed);
+  await sendAudit(newMember.guild, embed, `roles:${newMember.id}:${added.map((role) => role.id).sort().join(',')}:${removed.map((role) => role.id).sort().join(',')}`);
 });
 
 client.on('guildMemberAdd', async (member) => {
@@ -403,7 +403,7 @@ client.on('guildMemberAdd', async (member) => {
       { name: '加入时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
     )
     .setTimestamp();
-  await sendAudit(member.guild, embed);
+  await sendAudit(member.guild, embed, `member-join:${member.id}`);
 });
 
 client.on('guildMemberRemove', async (member) => {
@@ -417,7 +417,7 @@ client.on('guildMemberRemove', async (member) => {
       { name: '离开时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
     )
     .setTimestamp();
-  await sendAudit(member.guild, embed);
+  await sendAudit(member.guild, embed, `member-leave:${member.id}`);
 });
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {
@@ -437,7 +437,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       { name: '编辑后文字', value: code(newMessage.content || '(已清空文字)') },
     )
     .setFooter({ text: `Message ID: ${newMessage.id}` });
-  await sendAudit(newMessage.guild, embed);
+  await sendAudit(newMessage.guild, embed, `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`);
 });
 
 client.on('messageDelete', async (message) => {
@@ -455,7 +455,7 @@ client.on('messageDelete', async (message) => {
       { name: '删除前文字', value: code(message.content || '(无法取得文字内容)') },
     )
     .setFooter({ text: `Message ID: ${message.id}` });
-  await sendAudit(message.guild, embed);
+  await sendAudit(message.guild, embed, `message-delete:${message.id}`);
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
