@@ -1,41 +1,28 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
+  ModalBuilder,
   PermissionFlagsBits,
   SlashCommandBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } = require('discord.js');
 const { changeBalance, getGuildData, roundMoney, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'checkins.json');
 const checkins = new Map();
+const panelSessions = new Map();
 const DAY_MS = 86_400_000;
 const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 const checkinCommand = new SlashCommandBuilder()
   .setName('checkin')
-  .setDescription('领取今日签到奖励');
-
-const checkinSettingsCommand = new SlashCommandBuilder()
-  .setName('checkin-settings')
-  .setDescription('设置签到与每日奖励规则（管理员）')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
-  .addSubcommand((subcommand) => subcommand
-    .setName('base')
-    .setDescription('设置每日基础奖励')
-    .addStringOption((option) => option.setName('minimum').setDescription('最低奖励，例如 10.25').setRequired(true))
-    .addStringOption((option) => option.setName('maximum').setDescription('最高奖励；与最低相同则固定').setRequired(true)))
-  .addSubcommand((subcommand) => subcommand
-    .setName('streak')
-    .setDescription('设置连续签到额外奖励')
-    .addStringOption((option) => option.setName('amount').setDescription('每天连续签到增加的迷你币').setRequired(true)))
-  .addSubcommand((subcommand) => subcommand
-    .setName('weekly')
-    .setDescription('设置每周签到天数奖励')
-    .addIntegerOption((option) => option.setName('days').setDescription('本周签到达到几天').setMinValue(1).setMaxValue(7).setRequired(true))
-    .addStringOption((option) => option.setName('amount').setDescription('额外奖励数量').setRequired(true)))
-  .addSubcommand((subcommand) => subcommand.setName('show').setDescription('查看当前签到规则'));
+  .setDescription('打开签到设置面板并发布签到面板');
 
 function loadData() {
   try {
@@ -63,9 +50,7 @@ function saveData() {
 }
 
 function getConfig(guildId) {
-  if (!checkins.has(guildId)) {
-    checkins.set(guildId, { minimum: 10, maximum: 10, streakBonus: 0, weeklyDays: 7, weeklyBonus: 0, users: {} });
-  }
+  if (!checkins.has(guildId)) checkins.set(guildId, { minimum: 10, maximum: 10, streakBonus: 0, weeklyDays: 7, weeklyBonus: 0, users: {} });
   return checkins.get(guildId);
 }
 
@@ -78,15 +63,13 @@ function dayNumber(dayKey) {
 }
 
 function weekKey(dayKey) {
-  const day = dayNumber(dayKey);
-  return String(Math.floor(day / 7));
+  return String(Math.floor(dayNumber(dayKey) / 7));
 }
 
 function randomReward(minimum, maximum) {
-  const low = roundMoney(Math.min(minimum, maximum));
-  const high = roundMoney(Math.max(minimum, maximum));
-  if (low === high) return low;
-  return roundMoney(low + Math.random() * (high - low));
+  const low = Math.min(minimum, maximum);
+  const high = Math.max(minimum, maximum);
+  return low === high ? roundMoney(low) : roundMoney(low + Math.random() * (high - low));
 }
 
 function formatRules(config) {
@@ -98,67 +81,155 @@ function isManager(interaction) {
   return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
 }
 
+function sessionKey(interaction) {
+  return `${interaction.guildId}:${interaction.user.id}`;
+}
+
+function settingsEmbed(guild, session) {
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('签到设置面板')
+    .setDescription('这是私密设置面板。点击下方按钮调整规则，最后点击“确认”后，会在当前频道发布公开签到面板。')
+    .addFields({ name: '当前规则', value: formatRules(session) }, { name: '时区', value: 'UTC+8（每天 00:00 后可再次签到）' })
+    .setFooter({ text: `发布频道：#${guild.channels.cache.get(session.channelId)?.name || '当前频道'}` });
+}
+
+function settingsComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('checkin:base').setLabel('设置每日基础奖励').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('checkin:streak').setLabel('设置连续奖励').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('checkin:weekly').setLabel('设置每周奖励').setStyle(ButtonStyle.Secondary),
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('checkin:confirm').setLabel('确认').setEmoji('✅').setStyle(ButtonStyle.Success),
+    ),
+  ];
+}
+
+function settingsModal(type) {
+  const modal = new ModalBuilder().setCustomId(`checkin:modal:${type}`).setTitle(type === 'base' ? '设置每日基础奖励' : type === 'streak' ? '设置连续签到奖励' : '设置每周签到奖励');
+  if (type === 'base') {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('minimum').setLabel('最低奖励').setPlaceholder('例如 10 或 10.25').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('maximum').setLabel('最高奖励').setPlaceholder('与最低相同即为固定奖励').setStyle(TextInputStyle.Short).setRequired(true)),
+    );
+  } else if (type === 'streak') {
+    modal.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('amount').setLabel('每天连续签到额外奖励').setPlaceholder('例如 2.5').setStyle(TextInputStyle.Short).setRequired(true)));
+  } else {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('days').setLabel('本周需要签到几天（1-7）').setPlaceholder('例如 5').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('amount').setLabel('达到天数后的额外奖励').setPlaceholder('例如 50').setStyle(TextInputStyle.Short).setRequired(true)),
+    );
+  }
+  return modal;
+}
+
+function publicPanelEmbed(guild) {
+  const config = getConfig(guild.id);
+  return new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle('📅 每日签到')
+    .setDescription('每天按照 UTC+8 过了 00:00 后，点击下方按钮领取每日迷你币奖励。')
+    .addFields({ name: '签到规则', value: formatRules(config) })
+    .setFooter({ text: '每位成员每天只能签到一次' });
+}
+
+function publicPanelComponents() {
+  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('checkin:claim').setLabel('签到').setEmoji('📅').setStyle(ButtonStyle.Primary))];
+}
+
+async function claimCheckin(interaction) {
+  const config = getConfig(interaction.guildId);
+  const userId = interaction.user.id;
+  const today = localDayKey();
+  const record = config.users[userId] || { lastDay: null, streak: 0, week: null, weekDays: [] };
+  if (record.lastDay === today) return interaction.reply({ content: `你今天已经签到过了。当前连续签到：${record.streak} 天。`, ephemeral: true });
+  const previousDay = localDayKey(new Date(Date.now() - DAY_MS));
+  const streak = record.lastDay === previousDay ? Number(record.streak || 0) + 1 : 1;
+  const currentWeek = weekKey(today);
+  const weekDays = record.week === currentWeek ? [...new Set(record.weekDays || [])] : [];
+  weekDays.push(today);
+  const baseReward = randomReward(config.minimum, config.maximum);
+  const streakReward = roundMoney(Math.max(0, streak - 1) * config.streakBonus);
+  const weeklyReward = weekDays.length >= config.weeklyDays && !(record.week === currentWeek && record.weekRewardClaimed) ? config.weeklyBonus : 0;
+  const total = roundMoney(baseReward + streakReward + weeklyReward);
+  const balanceResult = changeBalance(interaction.guildId, userId, total);
+  config.users[userId] = { lastDay: today, streak, week: currentWeek, weekDays, weekRewardClaimed: weeklyReward > 0 || (record.week === currentWeek && record.weekRewardClaimed) };
+  saveData();
+  const currency = getGuildData(interaction.guildId).name;
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('✅ 签到成功')
+    .setDescription(`<@${userId}> 获得了 **${formatMoney(total)} ${currency}**`)
+    .addFields(
+      { name: '基础奖励', value: formatMoney(baseReward), inline: true },
+      { name: '连续签到奖励', value: `+${formatMoney(streakReward)}`, inline: true },
+      { name: '本周签到奖励', value: `+${formatMoney(weeklyReward)}`, inline: true },
+      { name: '连续签到', value: `${streak} 天`, inline: true },
+      { name: '本周签到天数', value: `${weekDays.length}/${config.weeklyDays}`, inline: true },
+      { name: '当前余额', value: `${formatMoney(balanceResult.after)} ${currency}`, inline: true },
+    )
+    .setFooter({ text: '签到时间按照 UTC+8，每天 00:00 后可再次签到' })
+    .setTimestamp();
+  return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
 async function handleCheckinInteraction(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'checkin') {
-    if (!interaction.guild) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
-    const config = getConfig(interaction.guildId);
-    const userId = interaction.user.id;
-    const today = localDayKey();
-    const record = config.users[userId] || { lastDay: null, streak: 0, week: null, weekDays: [] };
-    if (record.lastDay === today) return interaction.reply({ content: `你今天已经签到过了。当前连续签到：${record.streak} 天。`, ephemeral: true });
-    const previousDay = localDayKey(new Date(Date.now() - DAY_MS));
-    const streak = record.lastDay === previousDay ? Number(record.streak || 0) + 1 : 1;
-    const currentWeek = weekKey(today);
-    const weekDays = record.week === currentWeek ? [...new Set(record.weekDays || [])] : [];
-    weekDays.push(today);
-    const baseReward = randomReward(config.minimum, config.maximum);
-    const streakReward = roundMoney(Math.max(0, streak - 1) * config.streakBonus);
-    const weeklyReward = weekDays.length >= config.weeklyDays && !(record.week === currentWeek && record.weekRewardClaimed) ? config.weeklyBonus : 0;
-    const total = roundMoney(baseReward + streakReward + weeklyReward);
-    changeBalance(interaction.guildId, userId, total);
-    config.users[userId] = { lastDay: today, streak, week: currentWeek, weekDays, weekRewardClaimed: weeklyReward > 0 || (record.week === currentWeek && record.weekRewardClaimed) };
-    saveData();
-    const balance = getGuildData(interaction.guildId).balances[userId] || 0;
-    const embed = new EmbedBuilder()
-      .setColor(0xfee75c)
-      .setTitle('✅ 签到成功')
-      .setDescription(`<@${userId}> 获得了 **${formatMoney(total)} ${getGuildData(interaction.guildId).name}**`)
-      .addFields(
-        { name: '基础奖励', value: formatMoney(baseReward), inline: true },
-        { name: '连续签到奖励', value: `+${formatMoney(streakReward)}`, inline: true },
-        { name: '本周签到奖励', value: `+${formatMoney(weeklyReward)}`, inline: true },
-        { name: '连续签到', value: `${streak} 天`, inline: true },
-        { name: '本周签到天数', value: `${weekDays.length}/${config.weeklyDays}`, inline: true },
-        { name: '当前余额', value: `${formatMoney(balance)} ${getGuildData(interaction.guildId).name}`, inline: true },
-      )
-      .setFooter({ text: '签到时间按照 UTC+8，每天 00:00 后可再次签到' })
-      .setTimestamp();
-    return interaction.reply({ embeds: [embed] });
+    if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以发布签到面板。请点击频道里的签到按钮领取奖励。', ephemeral: true });
+    const session = { ...getConfig(interaction.guildId), channelId: interaction.channelId, users: getConfig(interaction.guildId).users };
+    panelSessions.set(sessionKey(interaction), session);
+    return interaction.reply({ embeds: [settingsEmbed(interaction.guild, session)], components: settingsComponents(), ephemeral: true });
   }
 
-  if (interaction.isChatInputCommand() && interaction.commandName === 'checkin-settings') {
+  if (interaction.isButton() && interaction.customId === 'checkin:claim') {
+    if (!interaction.inGuild()) return interaction.reply({ content: '此按钮只能在服务器内使用。', ephemeral: true });
+    return claimCheckin(interaction);
+  }
+
+  if (interaction.isButton() && ['base', 'streak', 'weekly'].some((type) => interaction.customId === `checkin:${type}`)) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = panelSessions.get(sessionKey(interaction));
+    if (!session) return interaction.reply({ content: '设置面板已过期，请重新使用 `/checkin`。', ephemeral: true });
+    return interaction.showModal(settingsModal(interaction.customId.split(':')[1]));
+  }
+
+  if (interaction.isButton() && interaction.customId === 'checkin:confirm') {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = panelSessions.get(sessionKey(interaction));
+    if (!session) return interaction.reply({ content: '设置面板已过期，请重新使用 `/checkin`。', ephemeral: true });
     const config = getConfig(interaction.guildId);
-    const subcommand = interaction.options.getSubcommand();
-    if (subcommand === 'show') return interaction.reply({ content: `当前签到规则：\n${formatRules(config)}`, ephemeral: true });
-    if (subcommand === 'base') {
-      const minimum = parseMoney(interaction.options.getString('minimum'));
-      const maximum = parseMoney(interaction.options.getString('maximum'));
-      if (minimum === null || maximum === null || minimum < 0 || maximum < 0) return interaction.reply({ content: '请输入非负金额，最多支持两位小数。', ephemeral: true });
-      config.minimum = minimum;
-      config.maximum = maximum;
-    } else if (subcommand === 'streak') {
-      const amount = parseMoney(interaction.options.getString('amount'));
-      if (amount === null || amount < 0) return interaction.reply({ content: '请输入非负金额，最多支持两位小数。', ephemeral: true });
-      config.streakBonus = amount;
-    } else if (subcommand === 'weekly') {
-      config.weeklyDays = interaction.options.getInteger('days');
-      const amount = parseMoney(interaction.options.getString('amount'));
-      if (amount === null || amount < 0) return interaction.reply({ content: '请输入非负金额，最多支持两位小数。', ephemeral: true });
-      config.weeklyBonus = amount;
-    }
+    Object.assign(config, { minimum: session.minimum, maximum: session.maximum, streakBonus: session.streakBonus, weeklyDays: session.weeklyDays, weeklyBonus: session.weeklyBonus });
     saveData();
-    return interaction.reply({ content: `签到规则已更新：\n${formatRules(config)}`, ephemeral: true });
+    panelSessions.delete(sessionKey(interaction));
+    await interaction.update({ content: '签到规则已保存，公开签到面板已发布到当前频道。', embeds: [], components: [] });
+    return interaction.channel.send({ embeds: [publicPanelEmbed(interaction.guild)], components: publicPanelComponents() });
+  }
+
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('checkin:modal:')) {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = panelSessions.get(sessionKey(interaction));
+    if (!session) return interaction.reply({ content: '设置面板已过期，请重新使用 `/checkin`。', ephemeral: true });
+    const type = interaction.customId.split(':')[2];
+    if (type === 'base') {
+      const minimum = parseMoney(interaction.fields.getTextInputValue('minimum'));
+      const maximum = parseMoney(interaction.fields.getTextInputValue('maximum'));
+      if (minimum === null || maximum === null || minimum < 0 || maximum < 0) return interaction.reply({ content: '请输入非负金额，最多支持两位小数。', ephemeral: true });
+      session.minimum = minimum;
+      session.maximum = maximum;
+    } else if (type === 'streak') {
+      const amount = parseMoney(interaction.fields.getTextInputValue('amount'));
+      if (amount === null || amount < 0) return interaction.reply({ content: '请输入非负金额，最多支持两位小数。', ephemeral: true });
+      session.streakBonus = amount;
+    } else {
+      const days = Number(interaction.fields.getTextInputValue('days'));
+      const amount = parseMoney(interaction.fields.getTextInputValue('amount'));
+      if (!Number.isInteger(days) || days < 1 || days > 7 || amount === null || amount < 0) return interaction.reply({ content: '签到天数必须是 1 到 7 的整数，奖励请输入非负金额，最多支持两位小数。', ephemeral: true });
+      session.weeklyDays = days;
+      session.weeklyBonus = amount;
+    }
+    return interaction.update({ embeds: [settingsEmbed(interaction.guild, session)], components: settingsComponents() });
   }
   return false;
 }
@@ -173,4 +244,4 @@ function setupCheckins(client) {
   }));
 }
 
-module.exports = { checkinCommand, checkinSettingsCommand, setupCheckins, localDayKey };
+module.exports = { checkinCommand, setupCheckins, localDayKey };

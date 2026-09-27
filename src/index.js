@@ -16,7 +16,7 @@ const {
 } = require('discord.js');
 const { giveawayCommand, setupGiveaways } = require('./giveaways');
 const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
-const { checkinCommand, checkinSettingsCommand, setupCheckins } = require('./checkin');
+const { checkinCommand, setupCheckins } = require('./checkin');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -60,7 +60,6 @@ const commands = [
   balanceCommand,
   balanceNameCommand,
   checkinCommand,
-  checkinSettingsCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -278,7 +277,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -375,8 +374,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/giveaway end|reroll|list|delete` 管理抽奖活动',
           '`/balance` 查看迷你币余额并打开余额面板',
           '`/balance-name` 管理员修改币名称',
-          '`/checkin` 领取每日签到奖励',
-          '`/checkin-settings` 管理员设置签到奖励',
+          '`/checkin` 管理员打开私密签到设置并发布面板',
           '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
