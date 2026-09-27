@@ -15,6 +15,7 @@ const {
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
 const { giveawayCommand, setupGiveaways } = require('./giveaways');
+const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -34,10 +35,9 @@ const auditEventOptions = [
   { value: 'ban', label: '成员被封禁', description: '显示执行者与被封禁成员' },
   { value: 'unban', label: '成员被解除封禁', description: '显示执行者与成员' },
   { value: 'kick', label: '成员被踢出', description: '显示执行者与被踢成员' },
-  { value: 'unkick', label: '解除踢出（Discord无此事件）', description: 'Discord 不提供 unkick 审计事件' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
-const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick', 'unkick']);
+const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick']);
 const auditChannelsByGuild = new Map();
 const enabledAuditEventsByGuild = new Map();
 const selectedAuditChannelByUser = new Map();
@@ -56,6 +56,8 @@ const commands = [
     .setDescription('设置服务器审计日志频道（管理员）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
   giveawayCommand,
+  balanceCommand,
+  balanceNameCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -273,7 +275,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && interaction.customId.startsWith('giveaway:')) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -368,6 +370,8 @@ client.on('interactionCreate', async (interaction) => {
           '`/audit-channel` 打开管理服务器权限专用的私密后台管理面板',
           '`/giveaway create` 创建抽奖并打开发布前私密设置面板',
           '`/giveaway end|reroll|list|delete` 管理抽奖活动',
+          '`/balance` 查看迷你币余额并打开余额面板',
+          '`/balance-name` 管理员修改币名称',
           '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
@@ -563,4 +567,5 @@ client.on('messageDelete', async (message) => {
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
 setupGiveaways(client);
+setupBalances(client);
 client.login(token);
