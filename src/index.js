@@ -20,7 +20,8 @@ const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
 const port = Number(process.env.PORT || 3000);
 const maxAuditChannels = 3;
-const configMarker = 'new-bot-audit-config-v2';
+const configMarker = 'new-bot-audit-config-v3';
+const legacyConfigMarker = 'new-bot-audit-config-v2';
 const auditEventOptions = [
   { value: 'roleChange', label: '身份组变动', description: '成员身份组新增或移除' },
   { value: 'nicknameChange', label: '昵称变动', description: '成员昵称修改前后' },
@@ -36,6 +37,7 @@ const auditEventOptions = [
   { value: 'unkick', label: '解除踢出（Discord无此事件）', description: 'Discord 不提供 unkick 审计事件' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
+const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick', 'unkick']);
 const auditChannelsByGuild = new Map();
 const enabledAuditEventsByGuild = new Map();
 const selectedAuditChannelByUser = new Map();
@@ -134,18 +136,23 @@ async function restoreGuildConfig(guild) {
     if (!messages) continue;
     for (const message of messages.values()) {
       const footer = message.embeds[0]?.footer?.text || '';
-      if (!footer.startsWith(`${configMarker}:${guild.id}:`)) continue;
+      if (!footer.startsWith(`${configMarker}:${guild.id}:`) && !footer.startsWith(`${legacyConfigMarker}:${guild.id}:`)) continue;
       if (!latest || message.createdTimestamp > latest.createdTimestamp) latest = message;
     }
   }
   if (!latest) return;
-  const encodedParts = latest.embeds[0].footer.text.split(':');
+  const footerText = latest.embeds[0].footer.text;
+  const isLegacyConfig = footerText.startsWith(`${legacyConfigMarker}:`);
+  const encodedParts = footerText.split(':');
   const encoded = encodedParts[2] || '';
   const ids = encoded.split(',').filter(Boolean).slice(0, maxAuditChannels);
   if (ids.length) auditChannelsByGuild.set(guild.id, ids);
   else auditChannelsByGuild.delete(guild.id);
   const savedEvents = (encodedParts[3] || '').split(',').filter((value) => defaultAuditEvents.has(value));
-  enabledAuditEventsByGuild.set(guild.id, new Set(savedEvents.length ? savedEvents : defaultAuditEvents));
+  const restoredEvents = new Set(savedEvents.length ? savedEvents : defaultAuditEvents);
+  if (isLegacyConfig) for (const event of moderationAuditEvents) restoredEvents.add(event);
+  enabledAuditEventsByGuild.set(guild.id, restoredEvents);
+  if (isLegacyConfig) await persistGuildConfig(guild);
 }
 
 function auditPanelPayload(guildIdValue, userId, notice = null) {
