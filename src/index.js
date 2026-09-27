@@ -236,13 +236,23 @@ async function sendAudit(guild, embed, eventKey = null) {
 }
 
 async function findRecentExecutor(guild, type, targetId) {
+  const entry = await findRecentAuditEntry(guild, type, targetId);
+  return entry?.executor || null;
+}
+
+async function findRecentAuditEntry(guild, type, targetId) {
   const logs = await guild.fetchAuditLogs({ type, limit: 10 }).catch(() => null);
   if (!logs) return null;
   const now = Date.now();
-  const entry = logs.entries.find(
-    (item) => item.targetId === targetId && now - item.createdTimestamp < 15_000 && item.executor,
+  return logs.entries.find(
+    (item) => item.targetId === targetId && now - item.createdTimestamp < 30_000,
   );
-  return entry?.executor || null;
+}
+
+function timeoutTimestamp(member) {
+  return member.communicationDisabledUntilTimestamp
+    || member.communicationDisabledUntil?.getTime?.()
+    || null;
 }
 
 client.once('ready', async (readyClient) => {
@@ -390,19 +400,21 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     await sendAudit(newMember.guild, embed, `nickname:${newMember.id}:${oldMember.nickname || ''}:${newMember.nickname || ''}`);
   }
 
-  const oldTimeout = oldMember.communicationDisabledUntilTimestamp || null;
-  const newTimeout = newMember.communicationDisabledUntilTimestamp || null;
+  const oldTimeout = timeoutTimestamp(oldMember);
+  const newTimeout = timeoutTimestamp(newMember);
   if (oldTimeout !== newTimeout) {
     const muted = Boolean(newTimeout && newTimeout > Date.now());
     const eventType = muted ? 'mute' : 'unmute';
     if (enabled.has(eventType)) {
-      const executor = await findRecentExecutor(newMember.guild, AuditLogEvent.MemberUpdate, newMember.id);
+      const auditEntry = await findRecentAuditEntry(newMember.guild, AuditLogEvent.MemberUpdate, newMember.id);
+      const executor = auditEntry?.executor || null;
       const embed = new EmbedBuilder()
         .setColor(muted ? 0xe67e22 : 0x2ecc71)
         .setTitle(muted ? '成员被禁言' : '成员解除禁言')
         .addFields(
           { name: '成员', value: `${newMember.user.tag} (<@${newMember.id}>)`, inline: false },
           { name: '执行者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法从审计日志确认', inline: false },
+          { name: '原因', value: clip(auditEntry?.reason || '未提供原因'), inline: false },
           ...(muted ? [
             { name: '禁言结束时间', value: `<t:${Math.floor(newTimeout / 1000)}:F>`, inline: true },
             { name: '禁言时长', value: formatTimeoutDuration(newTimeout - Date.now()), inline: true },
