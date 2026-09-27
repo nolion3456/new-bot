@@ -16,6 +16,7 @@ const {
 } = require('discord.js');
 const { giveawayCommand, setupGiveaways } = require('./giveaways');
 const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
+const { checkinCommand, checkinSettingsCommand, setupCheckins } = require('./checkin');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -58,6 +59,8 @@ const commands = [
   giveawayCommand,
   balanceCommand,
   balanceNameCommand,
+  checkinCommand,
+  checkinSettingsCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -372,6 +375,8 @@ client.on('interactionCreate', async (interaction) => {
           '`/giveaway end|reroll|list|delete` 管理抽奖活动',
           '`/balance` 查看迷你币余额并打开余额面板',
           '`/balance-name` 管理员修改币名称',
+          '`/checkin` 领取每日签到奖励',
+          '`/checkin-settings` 管理员设置签到奖励',
           '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
@@ -568,4 +573,5 @@ client.on('messageDelete', async (message) => {
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
 setupGiveaways(client);
 setupBalances(client);
+setupCheckins(client);
 client.login(token);

@@ -34,7 +34,8 @@ function parseMoney(value) {
 
 const balanceCommand = new SlashCommandBuilder()
   .setName('balance')
-  .setDescription('查看你的迷你币余额并打开操作面板');
+  .setDescription('查看迷你币余额并打开操作面板')
+  .addUserOption((option) => option.setName('user').setDescription('要查看的玩家（可选）'));
 
 const balanceNameCommand = new SlashCommandBuilder()
   .setName('balance-name')
@@ -71,6 +72,15 @@ function getGuildData(guildId) {
 
 function getBalance(guildId, userId) {
   return getGuildData(guildId).balances[userId] || 0;
+}
+
+function changeBalance(guildId, userId, amount) {
+  const data = getGuildData(guildId);
+  const before = getBalance(guildId, userId);
+  const after = roundMoney(before + Number(amount));
+  data.balances[userId] = after;
+  saveData();
+  return { before, after, data };
 }
 
 function panelEmbed(guild, user) {
@@ -112,7 +122,8 @@ function isManager(interaction) {
 async function handleBalanceInteraction(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'balance') {
     if (!interaction.guild) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
-    return interaction.reply({ embeds: [panelEmbed(interaction.guild, interaction.user)], components: panelComponents() });
+    const target = interaction.options.getUser('user') || interaction.user;
+    return interaction.reply({ embeds: [panelEmbed(interaction.guild, target)], components: panelComponents() });
   }
 
   if (interaction.isChatInputCommand() && interaction.commandName === 'balance-name') {
@@ -160,4 +171,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances, roundMoney, parseMoney, formatMoney };
+module.exports = { balanceCommand, balanceNameCommand, setupBalances, roundMoney, parseMoney, formatMoney, getBalance, changeBalance, getGuildData };
