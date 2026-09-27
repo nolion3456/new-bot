@@ -16,6 +16,22 @@ const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'balances.json');
 const guildBalances = new Map();
 
+function roundMoney(value) {
+  const rounded = Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatMoney(value) {
+  return roundMoney(value).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function parseMoney(value) {
+  const text = String(value).trim();
+  if (!/^-?(?:\d+(?:\.\d{1,2})?|\.\d{1,2})$/.test(text)) return null;
+  const amount = Number(text);
+  return Number.isFinite(amount) && Math.abs(amount) <= 9_000_000_000_000 ? roundMoney(amount) : null;
+}
+
 const balanceCommand = new SlashCommandBuilder()
   .setName('balance')
   .setDescription('查看你的迷你币余额并打开操作面板');
@@ -32,7 +48,7 @@ function loadData() {
     for (const [guildId, value] of Object.entries(raw)) {
       guildBalances.set(guildId, {
         name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : '迷你币',
-        balances: Object.fromEntries(Object.entries(value.balances || {}).map(([userId, amount]) => [userId, Math.max(0, Math.floor(Number(amount) || 0))])),
+        balances: Object.fromEntries(Object.entries(value.balances || {}).map(([userId, amount]) => [userId, roundMoney(Number(amount) || 0)])),
       });
     }
   } catch (error) {
@@ -62,7 +78,7 @@ function panelEmbed(guild, user) {
   return new EmbedBuilder()
     .setColor(0x57f287)
     .setTitle(`💰 ${data.name}余额`)
-    .setDescription(`<@${user.id}>（${user.tag}），你目前拥有：\n# ${getBalance(guild.id, user.id).toLocaleString()} ${data.name}`)
+    .setDescription(`<@${user.id}>（${user.tag}），你目前拥有：\n# ${formatMoney(getBalance(guild.id, user.id))} ${data.name}`)
     .setFooter({ text: '只有拥有“管理服务器”权限的成员可以加币或减币' })
     .setTimestamp();
 }
@@ -78,7 +94,7 @@ function amountModal(action) {
   const data = new TextInputBuilder()
     .setCustomId('balance:amount')
     .setLabel('数量')
-    .setPlaceholder('请输入正整数，例如 100')
+    .setPlaceholder('请输入金额，例如 100、10.25 或 -5.5')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setMinLength(1)
@@ -117,18 +133,18 @@ async function handleBalanceInteraction(interaction) {
   if (interaction.isModalSubmit() && interaction.customId.startsWith('balance:modal:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以操作余额。', ephemeral: true });
     const action = interaction.customId.split(':')[2];
-    const amount = Number(interaction.fields.getTextInputValue('balance:amount').trim());
-    if (!Number.isSafeInteger(amount) || amount <= 0) return interaction.reply({ content: '请输入大于 0 的整数。', ephemeral: true });
+    const amount = parseMoney(interaction.fields.getTextInputValue('balance:amount'));
+    if (amount === null || amount === 0) return interaction.reply({ content: '请输入非 0 金额，最多支持两位小数，例如 `100`、`10.25` 或 `-5.5`。', ephemeral: true });
     const targetId = interaction.message?.embeds?.[0]?.description?.match(/<@!?([0-9]+)>/)?.[1] || interaction.user.id;
     const data = getGuildData(interaction.guildId);
     const before = getBalance(interaction.guildId, targetId);
-    const after = action === 'add' ? before + amount : Math.max(0, before - amount);
+    const after = roundMoney(action === 'add' ? before + amount : before - amount);
     data.balances[targetId] = after;
     saveData();
     const target = await interaction.guild.members.fetch(targetId).catch(() => null);
     const targetLabel = target ? `${target.user.tag} (<@${targetId}>)` : `<@${targetId}>`;
     const actionLabel = action === 'add' ? '增加' : '减少';
-    await interaction.reply({ content: `余额已更新：${targetLabel} **${actionLabel} ${amount.toLocaleString()} ${data.name}**，变更后余额：**${after.toLocaleString()} ${data.name}**。操作者：${interaction.user}。` });
+    await interaction.reply({ content: `余额已更新：${targetLabel} **${actionLabel} ${formatMoney(amount)} ${data.name}**，变更后余额：**${formatMoney(after)} ${data.name}**。操作者：${interaction.user}。` });
     return;
   }
   return false;
@@ -144,4 +160,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances };
+module.exports = { balanceCommand, balanceNameCommand, setupBalances, roundMoney, parseMoney, formatMoney };
