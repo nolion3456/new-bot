@@ -18,6 +18,7 @@ const { giveawayCommand, setupGiveaways } = require('./giveaways');
 const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
+const { gambleCommand, setupGambling } = require('./gambling');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -62,6 +63,7 @@ const commands = [
   balanceNameCommand,
   checkinCommand,
   auctionCommand,
+  gambleCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -379,6 +381,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/checkin` 管理员打开私密签到设置并发布面板',
           '`/auction create` 管理员创建迷你币拍卖',
           '`/auction end` 管理员结束并结算拍卖',
+          '`/gamble` 管理员打开私密设置并发布小游戏大厅',
           '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
@@ -577,4 +580,5 @@ setupGiveaways(client);
 setupBalances(client);
 setupCheckins(client);
 setupAuctions(client);
+setupGambling(client);
 client.login(token);
