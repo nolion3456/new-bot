@@ -60,10 +60,10 @@ function settingsEmbed(session, currency) {
   return new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('🎮 小游戏设置面板')
-    .setDescription('这是私密管理员面板。调整两个游戏的价格和中奖概率，完成后点击“确认发布”。')
+    .setDescription('这是私密管理员面板。调整两个游戏的最低下注金额和中奖概率，完成后点击“确认发布”。')
     .addFields(
-      { name: '🎰 老司机老虎机', value: `每局：${formatMoney(session.slot.price)} ${currency}\n中奖概率：${session.slot.probability}%`, inline: true },
-      { name: '🎲 猜大小', value: `每局：${formatMoney(session['high-low'].price)} ${currency}\n中奖概率：${session['high-low'].probability}%`, inline: true },
+      { name: '🎰 老司机老虎机', value: `最低下注：${formatMoney(session.slot.price)} ${currency}\n中奖概率：${session.slot.probability}%`, inline: true },
+      { name: '🎲 猜大小', value: `最低下注：${formatMoney(session['high-low'].price)} ${currency}\n中奖概率：${session['high-low'].probability}%`, inline: true },
     );
 }
 
@@ -82,7 +82,7 @@ function settingModal(game) {
     .setCustomId(`gamble:modal:${game}`)
     .setTitle(game === 'slot' ? '设置老虎机' : '设置猜大小')
     .addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('每局价格').setPlaceholder('例如 10.25').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('最低下注金额').setPlaceholder('例如 10.25').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('probability').setLabel('中奖概率（0-100）').setPlaceholder('例如 35').setStyle(TextInputStyle.Short).setRequired(true)),
     );
 }
@@ -96,7 +96,7 @@ function publicPanelEmbed(guild) {
     .addFields(
       { name: '可玩游戏', value: '🎰 老司机老虎机\n🎲 猜大小', inline: true },
       { name: '结算币种', value: currency, inline: true },
-      { name: '注意', value: '每局开始会扣除价格；中奖时返还 2 倍本局价格。', inline: false },
+      { name: '注意', value: '成员自行输入下注金额；下注不能低于游戏最低下注，中奖时返还 2 倍下注金额。', inline: false },
     )
     .setFooter({ text: '游戏仅使用服务器内虚拟币，不涉及现实货币' });
 }
@@ -129,21 +129,34 @@ function randomWin(probability) {
   return Math.random() * 100 < probability;
 }
 
-async function playGame(interaction, game, choice = null) {
+function betModal(game, choice = '') {
+  return new ModalBuilder()
+    .setCustomId(`gamble:bet-modal:${game}:${choice}`)
+    .setTitle(game === 'slot' ? '输入老虎机下注' : `输入猜大小下注（${choice === 'high' ? '大' : '小'}）`)
+    .addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder()
+      .setCustomId('amount')
+      .setLabel('下注金额')
+      .setPlaceholder('请输入不低于最低下注的金额')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)));
+}
+
+async function playGame(interaction, game, choice, amount) {
   const config = getConfig(interaction.guildId)[game];
   const currency = getGuildData(interaction.guildId).name;
   const price = Number(config.price);
+  if (amount === null || amount < price) return interaction.reply({ content: `下注金额不能低于 ${formatMoney(price)} ${currency}。`, ephemeral: true });
   const balance = getBalance(interaction.guildId, interaction.user.id);
-  if (balance < price) return interaction.reply({ content: `余额不足。此游戏每局需要 ${formatMoney(price)} ${currency}，你的余额是 ${formatMoney(balance)} ${currency}。`, ephemeral: true });
-  const paid = changeBalance(interaction.guildId, interaction.user.id, -price);
+  if (balance < amount) return interaction.reply({ content: `余额不足。你的下注金额为 ${formatMoney(amount)} ${currency}，当前余额是 ${formatMoney(balance)} ${currency}。`, ephemeral: true });
+  const paid = changeBalance(interaction.guildId, interaction.user.id, -amount);
   const won = randomWin(config.probability);
-  const payout = won ? price * 2 : 0;
+  const payout = won ? amount * 2 : 0;
   const settled = payout ? changeBalance(interaction.guildId, interaction.user.id, payout) : paid;
   if (game === 'slot') {
     const symbols = won ? ['🍒', '🍒', '🍒'] : ['🍒', '🔔', '💎'];
     return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(won ? 0x57f287 : 0xed4245).setTitle('🎰 迷你币老虎机').addFields(
       { name: '结果', value: symbols.join(' | '), inline: false },
-      { name: '本局价格', value: `${formatMoney(price)} ${currency}`, inline: true },
+      { name: '下注金额', value: `${formatMoney(amount)} ${currency}`, inline: true },
       { name: '结果', value: won ? `中奖，返还 ${formatMoney(payout)} ${currency}` : '未中奖', inline: true },
       { name: '变更后余额', value: `${formatMoney(settled.after)} ${currency}`, inline: false },
     ).setTimestamp()], components: [] });
@@ -152,12 +165,12 @@ async function playGame(interaction, game, choice = null) {
   const actual = number >= 51 ? 'high' : 'low';
   const matched = actual === choice;
   const finalWin = won && matched;
-  const finalPayout = finalWin ? price * 2 : 0;
+  const finalPayout = finalWin ? amount * 2 : 0;
   const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout) : paid;
   return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(finalWin ? 0x57f287 : 0xed4245).setTitle('🎲 迷你币猜大小').addFields(
     { name: '你的选择', value: choice === 'high' ? '大' : '小', inline: true },
     { name: '系统结果', value: `${number}（${actual === 'high' ? '大' : '小'}）`, inline: true },
-    { name: '本局价格', value: `${formatMoney(price)} ${currency}`, inline: true },
+    { name: '下注金额', value: `${formatMoney(amount)} ${currency}`, inline: true },
     { name: '结果', value: finalWin ? `中奖，返还 ${formatMoney(finalPayout)} ${currency}` : '未中奖', inline: true },
     { name: '变更后余额', value: `${formatMoney(finalSettled.after)} ${currency}`, inline: false },
   ).setTimestamp()], components: [] });
@@ -203,9 +216,15 @@ async function handleGamblingInteraction(interaction) {
     return interaction.update({ embeds: [settingsEmbed(session, getGuildData(interaction.guildId).name)], components: settingsComponents() });
   }
 
-  if (interaction.isButton() && interaction.customId === 'gamble:choose:slot') return playGame(interaction, 'slot');
+  if (interaction.isButton() && interaction.customId === 'gamble:choose:slot') return interaction.showModal(betModal('slot'));
   if (interaction.isButton() && interaction.customId === 'gamble:choose:high-low') return interaction.update(guessPanel());
-  if (interaction.isButton() && interaction.customId.startsWith('gamble:guess:')) return playGame(interaction, 'high-low', interaction.customId.split(':')[2]);
+  if (interaction.isButton() && interaction.customId.startsWith('gamble:guess:')) return interaction.showModal(betModal('high-low', interaction.customId.split(':')[2]));
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('gamble:bet-modal:')) {
+    const [, , game, choice] = interaction.customId.split(':');
+    const amount = parseMoney(interaction.fields.getTextInputValue('amount'));
+    if (amount === null || amount <= 0) return interaction.reply({ content: '请输入大于 0 且最多两位小数的下注金额。', ephemeral: true });
+    return playGame(interaction, game, choice || null, amount);
+  }
   return false;
 }
 
