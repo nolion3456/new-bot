@@ -17,6 +17,7 @@ const {
 const { giveawayCommand, setupGiveaways } = require('./giveaways');
 const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
 const { checkinCommand, setupCheckins } = require('./checkin');
+const { auctionCommand, setupAuctions } = require('./auction');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -60,6 +61,7 @@ const commands = [
   balanceCommand,
   balanceNameCommand,
   checkinCommand,
+  auctionCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -277,7 +279,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -375,6 +377,8 @@ client.on('interactionCreate', async (interaction) => {
           '`/balance` 查看迷你币余额并打开余额面板',
           '`/balance-name` 管理员修改币名称',
           '`/checkin` 管理员打开私密签到设置并发布面板',
+          '`/auction create` 管理员创建迷你币拍卖',
+          '`/auction end` 管理员结束并结算拍卖',
           '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
         ].join('\n'),
       });
@@ -572,4 +576,5 @@ process.on('unhandledRejection', (error) => console.error('Unhandled rejection:'
 setupGiveaways(client);
 setupBalances(client);
 setupCheckins(client);
+setupAuctions(client);
 client.login(token);

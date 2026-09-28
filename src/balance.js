@@ -85,11 +85,17 @@ function changeBalance(guildId, userId, amount) {
 
 function panelEmbed(guild, user) {
   const data = getGuildData(guild.id);
+  const balance = getBalance(guild.id, user.id);
   return new EmbedBuilder()
-    .setColor(0x57f287)
-    .setTitle(`💰 ${data.name}余额`)
-    .setDescription(`<@${user.id}>（${user.tag}），你目前拥有：\n# ${formatMoney(getBalance(guild.id, user.id))} ${data.name}`)
-    .setFooter({ text: '只有拥有“管理服务器”权限的成员可以加币或减币' })
+    .setColor(balance >= 0 ? 0x57f287 : 0xed4245)
+    .setTitle(`💰 ${data.name}资产面板`)
+    .setDescription(`### <@${user.id}>\n查看并管理本服务器的 ${data.name} 余额。`)
+    .addFields(
+      { name: '当前余额', value: `# ${formatMoney(balance)} ${data.name}`, inline: false },
+      { name: '账户状态', value: balance >= 0 ? '余额正常' : '当前为负数', inline: true },
+      { name: '查询对象', value: `${user.tag}`, inline: true },
+    )
+    .setFooter({ text: '管理服务器权限可使用下方按钮调整余额｜金额支持最多两位小数与负数' })
     .setTimestamp();
 }
 
@@ -155,7 +161,19 @@ async function handleBalanceInteraction(interaction) {
     const target = await interaction.guild.members.fetch(targetId).catch(() => null);
     const targetLabel = target ? `${target.user.tag} (<@${targetId}>)` : `<@${targetId}>`;
     const actionLabel = action === 'add' ? '增加' : '减少';
-    await interaction.reply({ content: `余额已更新：${targetLabel} **${actionLabel} ${formatMoney(amount)} ${data.name}**，变更后余额：**${formatMoney(after)} ${data.name}**。操作者：${interaction.user}。` });
+    await interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setColor(action === 'add' ? 0x57f287 : 0xed4245)
+        .setTitle(`💰 ${data.name}余额变更`)
+        .addFields(
+          { name: '被调整成员', value: targetLabel, inline: false },
+          { name: '变更类型', value: actionLabel, inline: true },
+          { name: '变更数量', value: `${formatMoney(amount)} ${data.name}`, inline: true },
+          { name: '变更后余额', value: `${formatMoney(after)} ${data.name}`, inline: false },
+          { name: '操作者', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
+        )
+        .setTimestamp()],
+    });
     return;
   }
   return false;
