@@ -132,6 +132,19 @@ function randomWin(probability) {
   return Math.random() * 100 < probability;
 }
 
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function slotAnimationEmbed(symbols, amount, currency, frame) {
+  return new EmbedBuilder()
+    .setColor(0xf1c40f)
+    .setTitle(`🎰 老司机老虎机｜滚动中 ${'▰'.repeat((frame % 3) + 1)}`)
+    .setDescription(`老虎机图案：\n${symbols.join('　|　')}\n\n正在为你旋转图案，请稍候……`)
+    .addFields({ name: '本次下注', value: `${formatMoney(amount)} ${currency}`, inline: true })
+    .setFooter({ text: '动画仅对你可见' });
+}
+
 function betModal(game, choice = '') {
   return new ModalBuilder()
     .setCustomId(`gamble:bet-modal:${game}:${choice}`)
@@ -157,7 +170,14 @@ async function playGame(interaction, game, choice, amount) {
   const settled = payout ? changeBalance(interaction.guildId, interaction.user.id, payout) : paid;
   if (game === 'slot') {
     const symbols = won ? ['🍒', '🍒', '🍒'] : ['🍒', '🔔', '💎'];
-    return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(won ? 0x57f287 : 0xed4245).setTitle('🎰 迷你币老虎机').addFields(
+    await interaction.deferUpdate();
+    const spinningSymbols = ['🍒', '🔔', '💎', '🍋', '⭐', '7️⃣'];
+    for (let frame = 0; frame < 5; frame += 1) {
+      const frameSymbols = [0, 1, 2].map(() => spinningSymbols[Math.floor(Math.random() * spinningSymbols.length)]);
+      await interaction.editReply({ content: '', embeds: [slotAnimationEmbed(frameSymbols, amount, currency, frame)], components: [] });
+      await sleep(350);
+    }
+    return interaction.editReply({ content: '', embeds: [new EmbedBuilder().setColor(won ? 0x57f287 : 0xed4245).setTitle('🎰 迷你币老虎机').setDescription(`老虎机结果：\n${symbols.join('　|　')}`).addFields(
       { name: '结果', value: symbols.join(' | '), inline: false },
       { name: '下注金额', value: `${formatMoney(amount)} ${currency}`, inline: true },
       { name: '结果', value: won ? `中奖，返还 ${formatMoney(payout)} ${currency}` : '未中奖', inline: true },
@@ -202,7 +222,7 @@ async function handleGamblingInteraction(interaction) {
     return interaction.reply({ embeds: [settingsEmbed(session, getGuildData(interaction.guildId).name)], components: settingsComponents(), ephemeral: true });
   }
 
-  if (interaction.isButton() && interaction.customId === 'gamble:open') return interaction.reply(privateGamePanel());
+  if (interaction.isButton() && interaction.customId === 'gamble:open') return interaction.reply({ ...privateGamePanel(), ephemeral: true });
 
   if (interaction.isButton() && interaction.customId.startsWith('gamble:settings:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
