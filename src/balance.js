@@ -91,7 +91,7 @@ function panelEmbed(guild, user) {
     .setTitle(`💰 ${data.name}资产面板`)
     .setDescription(`### <@${user.id}>\n查看并管理本服务器的 ${data.name} 余额。`)
     .addFields(
-      { name: '当前余额', value: `# ${formatMoney(balance)} ${data.name}`, inline: false },
+      { name: '当前余额', value: `${formatMoney(balance)} ${data.name}`, inline: false },
       { name: '账户状态', value: balance >= 0 ? '余额正常' : '当前为负数', inline: true },
       { name: '查询对象', value: `${user.tag}`, inline: true },
     )
@@ -106,7 +106,7 @@ function panelComponents() {
   )];
 }
 
-function amountModal(action) {
+function amountModal(action, targetId, messageId = '') {
   const data = new TextInputBuilder()
     .setCustomId('balance:amount')
     .setLabel('数量')
@@ -116,7 +116,7 @@ function amountModal(action) {
     .setMinLength(1)
     .setMaxLength(12);
   return new ModalBuilder()
-    .setCustomId(`balance:modal:${action}`)
+    .setCustomId(`balance:modal:${action}:${targetId}:${messageId}`)
     .setTitle(action === 'add' ? '加币' : '减币')
     .addComponents(new ActionRowBuilder().addComponents(data));
 }
@@ -144,15 +144,16 @@ async function handleBalanceInteraction(interaction) {
   if (interaction.isButton() && interaction.customId.startsWith('balance:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以加币或减币。', ephemeral: true });
     const action = interaction.customId.split(':')[1];
-    return interaction.showModal(amountModal(action));
+    const targetId = interaction.message?.embeds?.[0]?.description?.match(/<@!?([0-9]+)>/)?.[1] || interaction.user.id;
+    return interaction.showModal(amountModal(action, targetId, interaction.message?.id));
   }
 
   if (interaction.isModalSubmit() && interaction.customId.startsWith('balance:modal:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以操作余额。', ephemeral: true });
-    const action = interaction.customId.split(':')[2];
+    const [, , action, targetIdFromModal, messageIdFromModal] = interaction.customId.split(':');
     const amount = parseMoney(interaction.fields.getTextInputValue('balance:amount'));
     if (amount === null || amount === 0) return interaction.reply({ content: '请输入非 0 金额，最多支持两位小数，例如 `100`、`10.25` 或 `-5.5`。', ephemeral: true });
-    const targetId = interaction.message?.embeds?.[0]?.description?.match(/<@!?([0-9]+)>/)?.[1] || interaction.user.id;
+    const targetId = targetIdFromModal || interaction.user.id;
     const data = getGuildData(interaction.guildId);
     const before = getBalance(interaction.guildId, targetId);
     const after = roundMoney(action === 'add' ? before + amount : before - amount);
@@ -161,19 +162,29 @@ async function handleBalanceInteraction(interaction) {
     const target = await interaction.guild.members.fetch(targetId).catch(() => null);
     const targetLabel = target ? `${target.user.tag} (<@${targetId}>)` : `<@${targetId}>`;
     const actionLabel = action === 'add' ? '增加' : '减少';
+    const changeEmbed = new EmbedBuilder()
+      .setColor(action === 'add' ? 0x57f287 : 0xed4245)
+      .setTitle(`💰 ${data.name}余额变更`)
+      .addFields(
+        { name: '被调整成员', value: targetLabel, inline: false },
+        { name: '变更类型', value: actionLabel, inline: true },
+        { name: '变更数量', value: `${formatMoney(amount)} ${data.name}`, inline: true },
+        { name: '变更后余额', value: `${formatMoney(after)} ${data.name}`, inline: false },
+        { name: '操作者', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
+      )
+      .setTimestamp();
+    const sourceMessage = interaction.message || (messageIdFromModal ? await interaction.channel?.messages.fetch(messageIdFromModal).catch(() => null) : null);
+    if (sourceMessage) {
+      const targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+      if (targetUser) await sourceMessage.edit({ embeds: [panelEmbed(interaction.guild, targetUser)], components: panelComponents() }).catch(() => null);
+    }
     await interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setColor(action === 'add' ? 0x57f287 : 0xed4245)
-        .setTitle(`💰 ${data.name}余额变更`)
-        .addFields(
-          { name: '被调整成员', value: targetLabel, inline: false },
-          { name: '变更类型', value: actionLabel, inline: true },
-          { name: '变更数量', value: `${formatMoney(amount)} ${data.name}`, inline: true },
-          { name: '变更后余额', value: `${formatMoney(after)} ${data.name}`, inline: false },
-          { name: '操作者', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
-        )
-        .setTimestamp()],
+      embeds: [changeEmbed],
     });
+    const targetUser = await interaction.client.users.fetch(targetId).catch(() => null);
+    if (targetUser) {
+      await targetUser.send({ embeds: [changeEmbed.setFooter({ text: '这是你的余额变更通知' })] }).catch(() => null);
+    }
     return;
   }
   return false;
