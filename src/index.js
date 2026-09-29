@@ -19,6 +19,7 @@ const { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
+const { transferCommand, setupTransfers } = require('./transfer');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -67,6 +68,7 @@ const commands = [
   checkinCommand,
   auctionCommand,
   gambleCommand,
+  transferCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -102,6 +104,30 @@ function formatTimeoutDuration(milliseconds) {
 
 function code(value) {
   return '```\n' + clip(value) + '\n```';
+}
+
+function attachmentSummary(message) {
+  const attachments = [...(message.attachments?.values?.() || [])];
+  const embeds = [...(message.embeds || [])];
+  const snapshots = [...(message.messageSnapshots?.values?.() || [])];
+  const references = message.reference?.messageId ? `引用消息：${message.reference.messageId}` : '';
+  const attachmentText = attachments.length
+    ? attachments.map((attachment) => `${attachment.name || '附件'}：${attachment.url}`).join('\n')
+    : '无图片或附件';
+  const embedText = embeds.length
+    ? embeds.map((embed) => embed.url || embed.title || '嵌入内容').join('\n')
+    : '无嵌入内容';
+  const forwardedText = snapshots.length
+    ? snapshots.map((snapshot) => {
+      const snapshotAttachments = [...(snapshot.attachments?.values?.() || [])].map((attachment) => attachment.url).join('\n');
+      return `转发内容：${snapshot.content || '(无文字)'}${snapshotAttachments ? `\n转发附件：${snapshotAttachments}` : ''}`;
+    }).join('\n')
+    : '';
+  return { attachmentText: clip(attachmentText, 1000), embedText: clip([references, embedText, forwardedText].filter(Boolean).join('\n'), 1000) };
+}
+
+function attachmentSignature(message) {
+  return [...(message.attachments?.values?.() || [])].map((attachment) => `${attachment.id}:${attachment.url}`).sort().join('|');
 }
 
 function isAuditChannel(channelId, guildIdValue) {
@@ -440,6 +466,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/auction create` 管理员创建迷你币拍卖',
           '`/auction end` 管理员结束并结算拍卖',
           '`/gamble` 管理员打开私密设置并发布小游戏大厅',
+          '`/transfer` 转账迷你币给指定成员，并私讯收款人',
           '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
@@ -596,10 +623,12 @@ client.on('guildBanRemove', async (ban) => {
 });
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!newMessage.guild || !enabledAuditEvents(newMessage.guild.id).has('messageEdit') || newMessage.author?.bot || isAuditChannel(newMessage.channelId, newMessage.guild.id)) return;
-  if (!oldMessage.content && !newMessage.content) return;
-  if (oldMessage.content === newMessage.content) return;
+  if (!newMessage.guild || newMessage.author?.bot || isAuditChannel(newMessage.channelId, newMessage.guild.id)) return;
+  if (!oldMessage.content && !newMessage.content && !oldMessage.attachments?.size && !newMessage.attachments?.size) return;
+  if (oldMessage.content === newMessage.content && attachmentSignature(oldMessage) === attachmentSignature(newMessage)) return;
   const author = newMessage.author || oldMessage.author;
+  const oldExtra = attachmentSummary(oldMessage);
+  const newExtra = attachmentSummary(newMessage);
   const embed = new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('消息编辑')
@@ -610,14 +639,18 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       { name: '编辑时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
       { name: '编辑前文字', value: code(oldMessage.content || '(无法取得原文字)') },
       { name: '编辑后文字', value: code(newMessage.content || '(已清空文字)') },
+      { name: '编辑前图片/附件', value: oldExtra.attachmentText },
+      { name: '编辑后图片/附件', value: newExtra.attachmentText },
+      { name: '引用/嵌入内容', value: newExtra.embedText },
     )
     .setFooter({ text: `Message ID: ${newMessage.id}` });
   await sendAudit(newMessage.guild, embed, 'messageEdit', `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`);
 });
 
 client.on('messageDelete', async (message) => {
-  if (!message.guild || !enabledAuditEvents(message.guild.id).has('messageDelete') || message.author?.bot || isAuditChannel(message.channelId, message.guild.id)) return;
+  if (!message.guild || message.author?.bot || isAuditChannel(message.channelId, message.guild.id)) return;
   const deleter = await findRecentExecutor(message.guild, AuditLogEvent.MessageDelete, message.author?.id);
+  const extra = attachmentSummary(message);
   const embed = new EmbedBuilder()
     .setColor(0xe74c3c)
     .setTitle('消息删除')
@@ -628,6 +661,8 @@ client.on('messageDelete', async (message) => {
       { name: '发送时间', value: `<t:${Math.floor((message.createdTimestamp || Date.now()) / 1000)}:F>`, inline: true },
       { name: '删除时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
       { name: '删除前文字', value: code(message.content || '(无法取得文字内容)') },
+      { name: '图片/附件', value: extra.attachmentText },
+      { name: '引用/嵌入内容', value: extra.embedText },
     )
     .setFooter({ text: `Message ID: ${message.id}` });
   await sendAudit(message.guild, embed, 'messageDelete', `message-delete:${message.id}`);
@@ -639,4 +674,5 @@ setupBalances(client);
 setupCheckins(client);
 setupAuctions(client);
 setupGambling(client);
+setupTransfers(client);
 client.login(token);
