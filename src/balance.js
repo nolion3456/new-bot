@@ -15,6 +15,7 @@ const {
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'balances.json');
 const guildBalances = new Map();
+let balanceAuditSender = null;
 
 function roundMoney(value) {
   const rounded = Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -80,7 +81,13 @@ function changeBalance(guildId, userId, amount) {
   const after = roundMoney(before + Number(amount));
   data.balances[userId] = after;
   saveData();
-  return { before, after, data };
+  const result = { before, after, data };
+  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: data.name })).catch((error) => console.error('Balance audit failed:', error.message));
+  return result;
+}
+
+function setBalanceAuditSender(sender) {
+  balanceAuditSender = sender;
 }
 
 function panelEmbed(guild, user) {
@@ -155,10 +162,8 @@ async function handleBalanceInteraction(interaction) {
     if (amount === null || amount === 0) return interaction.reply({ content: '请输入非 0 金额，最多支持两位小数，例如 `100`、`10.25` 或 `-5.5`。', ephemeral: true });
     const targetId = targetIdFromModal || interaction.user.id;
     const data = getGuildData(interaction.guildId);
-    const before = getBalance(interaction.guildId, targetId);
-    const after = roundMoney(action === 'add' ? before + amount : before - amount);
-    data.balances[targetId] = after;
-    saveData();
+    const signedAmount = action === 'add' ? amount : -amount;
+    const { before, after } = changeBalance(interaction.guildId, targetId, signedAmount);
     const target = await interaction.guild.members.fetch(targetId).catch(() => null);
     const targetLabel = target ? `${target.user.tag} (<@${targetId}>)` : `<@${targetId}>`;
     const actionLabel = action === 'add' ? '增加' : '减少';
@@ -200,4 +205,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances, roundMoney, parseMoney, formatMoney, getBalance, changeBalance, getGuildData };
+module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, changeBalance, getGuildData };

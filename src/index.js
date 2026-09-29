@@ -15,7 +15,7 @@ const {
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
 const { giveawayCommand, setupGiveaways } = require('./giveaways');
-const { balanceCommand, balanceNameCommand, setupBalances } = require('./balance');
+const { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, formatMoney } = require('./balance');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
@@ -24,7 +24,8 @@ const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
 const port = Number(process.env.PORT || 3000);
 const maxAuditChannels = 3;
-const configMarker = 'new-bot-audit-config-v3';
+const configMarker = 'new-bot-audit-config-v4';
+const previousConfigMarker = 'new-bot-audit-config-v3';
 const legacyConfigMarker = 'new-bot-audit-config-v2';
 const auditEventOptions = [
   { value: 'roleChange', label: '身份组变动', description: '成员身份组新增或移除' },
@@ -38,10 +39,12 @@ const auditEventOptions = [
   { value: 'ban', label: '成员被封禁', description: '显示执行者与被封禁成员' },
   { value: 'unban', label: '成员被解除封禁', description: '显示执行者与成员' },
   { value: 'kick', label: '成员被踢出', description: '显示执行者与被踢成员' },
+  { value: 'balanceChange', label: '余额变化', description: '显示余额增加、减少、操作者与变更后余额' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
 const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick']);
 const auditChannelsByGuild = new Map();
+const auditEventsByChannelByGuild = new Map();
 const enabledAuditEventsByGuild = new Map();
 const selectedAuditChannelByUser = new Map();
 const recentAuditDeliveries = new Map();
@@ -109,17 +112,32 @@ function enabledAuditEvents(guildIdValue) {
   return enabledAuditEventsByGuild.get(guildIdValue) || defaultAuditEvents;
 }
 
+function enabledEventsForChannel(guildIdValue, channelId) {
+  return auditEventsByChannelByGuild.get(guildIdValue)?.get(channelId) || enabledAuditEvents(guildIdValue);
+}
+
+function setEventsForChannel(guildIdValue, channelId, events) {
+  if (!auditEventsByChannelByGuild.has(guildIdValue)) auditEventsByChannelByGuild.set(guildIdValue, new Map());
+  auditEventsByChannelByGuild.get(guildIdValue).set(channelId, new Set(events));
+}
+
 function configEmbed(guildIdValue, channelIds) {
-  const enabled = enabledAuditEvents(guildIdValue);
+  const channelSummary = channelIds.length
+    ? channelIds.map((id) => {
+      const events = enabledEventsForChannel(guildIdValue, id);
+      const labels = auditEventOptions.filter((option) => events.has(option.value)).map((option) => option.label);
+      return `<#${id}>：${labels.join('、') || '不显示任何事件'}`;
+    }).join('\n')
+    : '未设置';
+  const encoded = channelIds.map((id) => `${id}=${[...enabledEventsForChannel(guildIdValue, id)].join(',')}`).join(';');
   return new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle('后台审计频道配置')
     .setDescription(`当前配置 ${channelIds.length}/${maxAuditChannels} 个频道。请勿删除此配置消息，否则机器人可能无法在重启后恢复设置。`)
     .addFields(
-      { name: '频道', value: channelIds.length ? channelIds.map((id) => `<#${id}>`).join('\n') : '未设置' },
-      { name: '已开启日志', value: auditEventOptions.filter((option) => enabled.has(option.value)).map((option) => option.label).join('、') || '无' },
+      { name: '频道与日志类型', value: channelSummary },
     )
-    .setFooter({ text: `${configMarker}:${guildIdValue}:${channelIds.join(',')}:${[...enabled].join(',')}` })
+    .setFooter({ text: `${configMarker}:${guildIdValue}:${encoded}` })
     .setTimestamp();
 }
 
@@ -144,23 +162,38 @@ async function restoreGuildConfig(guild) {
     if (!messages) continue;
     for (const message of messages.values()) {
       const footer = message.embeds[0]?.footer?.text || '';
-      if (!footer.startsWith(`${configMarker}:${guild.id}:`) && !footer.startsWith(`${legacyConfigMarker}:${guild.id}:`)) continue;
+      if (!footer.startsWith(`${configMarker}:${guild.id}:`) && !footer.startsWith(`${previousConfigMarker}:${guild.id}:`) && !footer.startsWith(`${legacyConfigMarker}:${guild.id}:`)) continue;
       if (!latest || message.createdTimestamp > latest.createdTimestamp) latest = message;
     }
   }
   if (!latest) return;
   const footerText = latest.embeds[0].footer.text;
+  const isCurrentConfig = footerText.startsWith(`${configMarker}:`);
   const isLegacyConfig = footerText.startsWith(`${legacyConfigMarker}:`);
   const encodedParts = footerText.split(':');
   const encoded = encodedParts[2] || '';
-  const ids = encoded.split(',').filter(Boolean).slice(0, maxAuditChannels);
+  const ids = isCurrentConfig
+    ? encoded.split(';').map((part) => part.split('=')[0]).filter(Boolean).slice(0, maxAuditChannels)
+    : encoded.split(',').filter(Boolean).slice(0, maxAuditChannels);
   if (ids.length) auditChannelsByGuild.set(guild.id, ids);
   else auditChannelsByGuild.delete(guild.id);
+  if (isCurrentConfig) {
+    const channelMap = new Map();
+    for (const part of encoded.split(';')) {
+      const [channelId, eventText = ''] = part.split('=');
+      if (!channelId || !ids.includes(channelId)) continue;
+      channelMap.set(channelId, new Set(eventText.split(',').filter((value) => defaultAuditEvents.has(value))));
+    }
+    auditEventsByChannelByGuild.set(guild.id, channelMap);
+  }
   const savedEvents = (encodedParts[3] || '').split(',').filter((value) => defaultAuditEvents.has(value));
   const restoredEvents = new Set(savedEvents.length ? savedEvents : defaultAuditEvents);
   if (isLegacyConfig) for (const event of moderationAuditEvents) restoredEvents.add(event);
   enabledAuditEventsByGuild.set(guild.id, restoredEvents);
-  if (isLegacyConfig) await persistGuildConfig(guild);
+  if (!isCurrentConfig) {
+    for (const channelId of ids) setEventsForChannel(guild.id, channelId, restoredEvents);
+    await persistGuildConfig(guild);
+  }
 }
 
 function auditPanelPayload(guildIdValue, userId, notice = null) {
@@ -172,13 +205,13 @@ function auditPanelPayload(guildIdValue, userId, notice = null) {
     .setMinValues(1)
     .setMaxValues(1)
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
-  const enabled = enabledAuditEvents(guildIdValue);
+  const enabled = selectedId ? enabledEventsForChannel(guildIdValue, selectedId) : defaultAuditEvents;
   const eventOptions = auditEventOptions.map((option) => new StringSelectMenuOptionBuilder()
     .setLabel(option.label)
     .setValue(option.value)
     .setDescription(option.description)
     .setDefault(enabled.has(option.value)));
-  if (!enabled.size) eventOptions.push(new StringSelectMenuOptionBuilder().setLabel('关闭所有日志').setValue('none').setDescription('不发送任何审计事件').setDefault(true));
+  eventOptions.push(new StringSelectMenuOptionBuilder().setLabel('关闭所有日志').setValue('none').setDescription('不发送任何审计事件').setDefault(!enabled.size));
   const eventSelect = new StringSelectMenuBuilder()
     .setCustomId('audit-event-select')
     .setPlaceholder('选择要显示的日志类型（可多选）')
@@ -194,7 +227,7 @@ function auditPanelPayload(guildIdValue, userId, notice = null) {
       new StringSelectMenuOptionBuilder().setLabel('刷新当前配置').setValue('list').setDescription('查看当前后台频道'),
     );
   return {
-    content: notice || '这是私密的后台审计频道面板。请使用三个下拉菜单选择日志类型、频道和操作。',
+    content: notice || '这是私密的后台审计频道面板。先选择频道，再为该频道选择要显示的日志类型和操作。不同频道可以显示不同内容。',
     embeds: [configEmbed(guildIdValue, channelIds)],
     components: [new ActionRowBuilder().addComponents(eventSelect), new ActionRowBuilder().addComponents(select), new ActionRowBuilder().addComponents(actionSelect)],
   };
@@ -223,7 +256,7 @@ async function registerCommands() {
   console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId} (old global copies removed)` : 'globally (old guild copies removed)'}.`);
 }
 
-async function sendAudit(guild, embed, eventKey = null) {
+async function sendAudit(guild, embed, eventType, eventKey = null) {
   const channelIds = [...new Set(auditChannelsByGuild.get(guild.id) || [])];
   if (!channelIds.length) return;
   const embedData = embed.toJSON();
@@ -235,6 +268,7 @@ async function sendAudit(guild, embed, eventKey = null) {
   });
   const now = Date.now();
   for (const channelId of channelIds) {
+    if (!enabledEventsForChannel(guild.id, channelId).has(eventType)) continue;
     const deliveryKey = `${guild.id}:${channelId}:${fingerprint}`;
     const previousDelivery = recentAuditDeliveries.get(deliveryKey);
     if (previousDelivery && now - previousDelivery < 30_000) continue;
@@ -249,6 +283,24 @@ async function sendAudit(guild, embed, eventKey = null) {
     if (now - timestamp > 30_000) recentAuditDeliveries.delete(key);
   }
 }
+
+setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency }) => {
+  const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return;
+  const user = await client.users.fetch(userId).catch(() => null);
+  const embed = new EmbedBuilder()
+    .setColor(amount >= 0 ? 0x57f287 : 0xed4245)
+    .setTitle('余额变化')
+    .addFields(
+      { name: '成员', value: user ? `${user.tag} (<@${userId}>)` : `<@${userId}>`, inline: false },
+      { name: '变化类型', value: amount >= 0 ? '增加' : '减少', inline: true },
+      { name: '变化数量', value: `${formatMoney(Math.abs(amount))} ${currency}`, inline: true },
+      { name: '变化前余额', value: `${formatMoney(before)} ${currency}`, inline: true },
+      { name: '变化后余额', value: `${formatMoney(after)} ${currency}`, inline: true },
+    )
+    .setTimestamp();
+  await sendAudit(guild, embed, 'balanceChange', `balance:${userId}:${before}:${after}:${amount}`);
+});
 
 async function findRecentExecutor(guild, type, targetId) {
   const entry = await findRecentAuditEntry(guild, type, targetId);
@@ -293,12 +345,14 @@ client.on('interactionCreate', async (interaction) => {
 
       const selectionKey = `${interaction.guildId}:${interaction.user.id}`;
       if (interaction.isStringSelectMenu() && interaction.customId === 'audit-event-select') {
+        const selectedId = selectedAuditChannelByUser.get(selectionKey);
+        if (!selectedId) return interaction.reply({ content: '请先在频道下拉菜单中选择要配置的频道。', ephemeral: true });
         const selectedEvents = interaction.values.includes('none') ? [] : interaction.values;
-        enabledAuditEventsByGuild.set(interaction.guildId, new Set(selectedEvents));
+        setEventsForChannel(interaction.guildId, selectedId, selectedEvents);
         await interaction.deferUpdate();
         await persistGuildConfig(interaction.guild);
         const labels = auditEventOptions.filter((option) => selectedEvents.includes(option.value)).map((option) => option.label);
-        return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已更新后台显示内容：${labels.length ? labels.join('、') : '不显示任何事件'}。`));
+        return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已更新 <#${selectedId}> 的显示内容：${labels.length ? labels.join('、') : '不显示任何事件'}。`));
       }
 
       if (interaction.isChannelSelectMenu()) {
@@ -321,6 +375,7 @@ client.on('interactionCreate', async (interaction) => {
           if (channelIds.includes(selectedId)) return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, '这个频道已经在后台列表中。'));
           if (channelIds.length >= maxAuditChannels) return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `最多只能设置 ${maxAuditChannels} 个后台审计频道。`));
           auditChannelsByGuild.set(interaction.guildId, [...channelIds, selectedId]);
+          setEventsForChannel(interaction.guildId, selectedId, enabledAuditEvents(interaction.guildId));
           await persistGuildConfig(interaction.guild);
           return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已添加 <#${selectedId}>。`));
         }
@@ -328,6 +383,7 @@ client.on('interactionCreate', async (interaction) => {
         const updated = channelIds.filter((id) => id !== selectedId);
         if (updated.length) auditChannelsByGuild.set(interaction.guildId, updated);
         else auditChannelsByGuild.delete(interaction.guildId);
+        auditEventsByChannelByGuild.get(interaction.guildId)?.delete(selectedId);
         await persistGuildConfig(interaction.guild, selectedId);
         return interaction.editReply(auditPanelPayload(interaction.guildId, interaction.user.id, `已移除 <#${selectedId}>。`));
       }
@@ -347,6 +403,7 @@ client.on('interactionCreate', async (interaction) => {
         if (channelIds.length >= maxAuditChannels) return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `最多只能设置 ${maxAuditChannels} 个后台审计频道。`));
         const updated = [...channelIds, selectedId];
         auditChannelsByGuild.set(interaction.guildId, updated);
+        setEventsForChannel(interaction.guildId, selectedId, enabledAuditEvents(interaction.guildId));
         await persistGuildConfig(interaction.guild);
         return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已添加 <#${selectedId}>，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`));
       }
@@ -356,6 +413,7 @@ client.on('interactionCreate', async (interaction) => {
         const updated = channelIds.filter((id) => id !== selectedId);
         if (updated.length) auditChannelsByGuild.set(interaction.guildId, updated);
         else auditChannelsByGuild.delete(interaction.guildId);
+        auditEventsByChannelByGuild.get(interaction.guildId)?.delete(selectedId);
         await persistGuildConfig(interaction.guild, selectedId);
         return interaction.update(auditPanelPayload(interaction.guildId, interaction.user.id, `已移除 <#${selectedId}>，当前共 ${updated.length}/${maxAuditChannels} 个后台频道。`));
       }
@@ -382,7 +440,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/auction create` 管理员创建迷你币拍卖',
           '`/auction end` 管理员结束并结算拍卖',
           '`/gamble` 管理员打开私密设置并发布小游戏大厅',
-          '审计面板可用下拉菜单切换日志类型，并管理最多 3 个后台频道',
+          '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
     }
@@ -418,7 +476,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
         { name: '操作者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '成员本人或无法确认', inline: false },
       )
       .setTimestamp();
-    await sendAudit(newMember.guild, embed, `nickname:${newMember.id}:${oldMember.nickname || ''}:${newMember.nickname || ''}`);
+    await sendAudit(newMember.guild, embed, 'nicknameChange', `nickname:${newMember.id}:${oldMember.nickname || ''}:${newMember.nickname || ''}`);
   }
 
   const oldTimeout = timeoutTimestamp(oldMember);
@@ -442,7 +500,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
           ] : []),
         )
         .setTimestamp();
-      await sendAudit(newMember.guild, embed, `${eventType}:${newMember.id}:${newTimeout || 'none'}`);
+      await sendAudit(newMember.guild, embed, eventType, `${eventType}:${newMember.id}:${newTimeout || 'none'}`);
     }
   }
 
@@ -461,7 +519,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
       { name: '操作者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法确认', inline: false },
     )
     .setTimestamp();
-  await sendAudit(newMember.guild, embed, `roles:${newMember.id}:${added.map((role) => role.id).sort().join(',')}:${removed.map((role) => role.id).sort().join(',')}`);
+  await sendAudit(newMember.guild, embed, 'roleChange', `roles:${newMember.id}:${added.map((role) => role.id).sort().join(',')}:${removed.map((role) => role.id).sort().join(',')}`);
 });
 
 client.on('guildMemberAdd', async (member) => {
@@ -475,7 +533,7 @@ client.on('guildMemberAdd', async (member) => {
       { name: '加入时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
     )
     .setTimestamp();
-  await sendAudit(member.guild, embed, `member-join:${member.id}`);
+  await sendAudit(member.guild, embed, 'memberJoin', `member-join:${member.id}`);
 });
 
 client.on('guildMemberRemove', async (member) => {
@@ -493,7 +551,7 @@ client.on('guildMemberRemove', async (member) => {
         { name: '帐号创建时间', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:F>`, inline: true },
       )
       .setTimestamp();
-    return sendAudit(member.guild, embed, `kick:${member.id}:${kickExecutor.id}`);
+    return sendAudit(member.guild, embed, 'kick', `kick:${member.id}:${kickExecutor.id}`);
   }
   if (!enabled.has('memberLeave')) return;
   const embed = new EmbedBuilder()
@@ -505,7 +563,7 @@ client.on('guildMemberRemove', async (member) => {
       { name: '离开时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
     )
     .setTimestamp();
-  await sendAudit(member.guild, embed, `member-leave:${member.id}`);
+  await sendAudit(member.guild, embed, 'memberLeave', `member-leave:${member.id}`);
 });
 
 client.on('guildBanAdd', async (ban) => {
@@ -520,7 +578,7 @@ client.on('guildBanAdd', async (ban) => {
       { name: '帐号创建时间', value: `<t:${Math.floor(ban.user.createdTimestamp / 1000)}:F>`, inline: true },
     )
     .setTimestamp();
-  await sendAudit(ban.guild, embed, `ban:${ban.user.id}`);
+  await sendAudit(ban.guild, embed, 'ban', `ban:${ban.user.id}`);
 });
 
 client.on('guildBanRemove', async (ban) => {
@@ -534,7 +592,7 @@ client.on('guildBanRemove', async (ban) => {
       { name: '执行者', value: executor ? `${executor.tag} (<@${executor.id}>)` : '无法从审计日志确认', inline: false },
     )
     .setTimestamp();
-  await sendAudit(ban.guild, embed, `unban:${ban.user.id}`);
+  await sendAudit(ban.guild, embed, 'unban', `unban:${ban.user.id}`);
 });
 
 client.on('messageUpdate', async (oldMessage, newMessage) => {
@@ -554,7 +612,7 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
       { name: '编辑后文字', value: code(newMessage.content || '(已清空文字)') },
     )
     .setFooter({ text: `Message ID: ${newMessage.id}` });
-  await sendAudit(newMessage.guild, embed, `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`);
+  await sendAudit(newMessage.guild, embed, 'messageEdit', `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`);
 });
 
 client.on('messageDelete', async (message) => {
@@ -572,7 +630,7 @@ client.on('messageDelete', async (message) => {
       { name: '删除前文字', value: code(message.content || '(无法取得文字内容)') },
     )
     .setFooter({ text: `Message ID: ${message.id}` });
-  await sendAudit(message.guild, embed, `message-delete:${message.id}`);
+  await sendAudit(message.guild, embed, 'messageDelete', `message-delete:${message.id}`);
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
