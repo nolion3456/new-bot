@@ -20,6 +20,7 @@ const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
 const { transferCommand, setupTransfers } = require('./transfer');
+const { exchangeCommand, setupExchange } = require('./exchange');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -69,6 +70,7 @@ const commands = [
   auctionCommand,
   gambleCommand,
   transferCommand,
+  exchangeCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -359,7 +361,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -467,6 +469,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/auction end` 管理员结束并结算拍卖',
           '`/gamble` 管理员打开私密设置并发布小游戏大厅',
           '`/transfer` 转账迷你币给指定成员，并私讯收款人',
+          '`/exchange` 管理员设置并发布公开兑换面板',
           '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
@@ -675,4 +678,5 @@ setupCheckins(client);
 setupAuctions(client);
 setupGambling(client);
 setupTransfers(client);
+setupExchange(client);
 client.login(token);

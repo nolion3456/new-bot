@@ -51,6 +51,7 @@ function loadData() {
       guildBalances.set(guildId, {
         name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : '迷你币',
         balances: Object.fromEntries(Object.entries(value.balances || {}).map(([userId, amount]) => [userId, roundMoney(Number(amount) || 0)])),
+        majorBalances: Object.fromEntries(Object.entries(value.majorBalances || {}).map(([userId, amount]) => [userId, roundMoney(Number(amount) || 0)])),
       });
     }
   } catch (error) {
@@ -67,12 +68,27 @@ function saveData() {
 }
 
 function getGuildData(guildId) {
-  if (!guildBalances.has(guildId)) guildBalances.set(guildId, { name: '迷你币', balances: {} });
+  if (!guildBalances.has(guildId)) guildBalances.set(guildId, { name: '迷你币', balances: {}, majorBalances: {} });
   return guildBalances.get(guildId);
 }
 
 function getBalance(guildId, userId) {
   return getGuildData(guildId).balances[userId] || 0;
+}
+
+function getMajorBalance(guildId, userId) {
+  return getGuildData(guildId).majorBalances[userId] || 0;
+}
+
+function changeMajorBalance(guildId, userId, amount) {
+  const data = getGuildData(guildId);
+  const before = getMajorBalance(guildId, userId);
+  const after = roundMoney(before + Number(amount));
+  data.majorBalances[userId] = after;
+  saveData();
+  const result = { before, after, data };
+  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: '余额' })).catch((error) => console.error('Balance audit failed:', error.message));
+  return result;
 }
 
 function changeBalance(guildId, userId, amount) {
@@ -93,12 +109,14 @@ function setBalanceAuditSender(sender) {
 function panelEmbed(guild, user) {
   const data = getGuildData(guild.id);
   const balance = getBalance(guild.id, user.id);
+  const majorBalance = getMajorBalance(guild.id, user.id);
   return new EmbedBuilder()
     .setColor(balance >= 0 ? 0x57f287 : 0xed4245)
     .setTitle(`💰 ${data.name}资产面板`)
     .setDescription(`### <@${user.id}>\n查看并管理本服务器的 ${data.name} 余额。`)
     .addFields(
       { name: '当前余额', value: `${formatMoney(balance)} ${data.name}`, inline: false },
+      { name: '大面额余额', value: `${formatMoney(majorBalance)} 余额`, inline: false },
       { name: '账户状态', value: balance >= 0 ? '余额正常' : '当前为负数', inline: true },
       { name: '查询对象', value: `${user.tag}`, inline: true },
     )
@@ -205,4 +223,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, changeBalance, getGuildData };
+module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, changeBalance, getMajorBalance, changeMajorBalance, getGuildData };
