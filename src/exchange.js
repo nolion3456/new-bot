@@ -139,12 +139,12 @@ async function handleExchange(interaction) {
     const result = amount / rule.source * rule.target;
     if (direction === 'mini-major') {
       if (getBalance(interaction.guildId, interaction.user.id) < amount) return interaction.reply({ content: `迷你币余额不足，需要 ${formatMoney(amount)} ${mini}。`, ephemeral: true });
-      changeBalance(interaction.guildId, interaction.user.id, -amount);
-      changeMajorBalance(interaction.guildId, interaction.user.id, result);
+      changeBalance(interaction.guildId, interaction.user.id, -amount, { reason: '兑换：迷你币兑换余额', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+      changeMajorBalance(interaction.guildId, interaction.user.id, result, { reason: '兑换：迷你币兑换余额', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     } else {
       if (getMajorBalance(interaction.guildId, interaction.user.id) < amount) return interaction.reply({ content: `余额不足，需要 ${formatMoney(amount)} 余额。`, ephemeral: true });
-      changeMajorBalance(interaction.guildId, interaction.user.id, -amount);
-      changeBalance(interaction.guildId, interaction.user.id, result);
+      changeMajorBalance(interaction.guildId, interaction.user.id, -amount, { reason: '兑换：余额兑换迷你币', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+      changeBalance(interaction.guildId, interaction.user.id, result, { reason: '兑换：余额兑换迷你币', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     }
     return interaction.update({ content: `兑换成功\n\n兑换方向：${direction === 'mini-major' ? `${formatMoney(amount)} ${mini} → ${formatMoney(result)} 余额` : `${formatMoney(amount)} 余额 → ${formatMoney(result)} ${mini}`}\n\n本次兑换结果仅你可见。`, embeds: [], components: [] });
   }

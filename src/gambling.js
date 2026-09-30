@@ -164,10 +164,11 @@ async function playGame(interaction, game, choice, amount) {
   if (amount === null || amount < price) return interaction.reply({ content: `下注金额不能低于 ${formatMoney(price)} ${currency}。`, ephemeral: true });
   const balance = getBalance(interaction.guildId, interaction.user.id);
   if (balance < amount) return interaction.reply({ content: `余额不足。你的下注金额为 ${formatMoney(amount)} ${currency}，当前余额是 ${formatMoney(balance)} ${currency}。`, ephemeral: true });
-  const paid = changeBalance(interaction.guildId, interaction.user.id, -amount);
+  const actor = `${interaction.user.tag} (<@${interaction.user.id}>)`;
+  const paid = changeBalance(interaction.guildId, interaction.user.id, -amount, { reason: `小游戏下注：${game}`, actorId: interaction.user.id, actorLabel: actor });
   const won = randomWin(config.probability);
   const payout = won ? amount * 2 : 0;
-  const settled = payout ? changeBalance(interaction.guildId, interaction.user.id, payout) : paid;
+  const settled = payout ? changeBalance(interaction.guildId, interaction.user.id, payout, { reason: `小游戏中奖派奖：${game}`, actorId: interaction.user.id, actorLabel: actor }) : paid;
   if (game === 'slot') {
     const symbols = won ? ['🍒', '🍒', '🍒'] : ['🍒', '🔔', '💎'];
     await interaction.deferUpdate();
@@ -189,7 +190,7 @@ async function playGame(interaction, game, choice, amount) {
     const matched = actual === choice;
     const finalWin = won && matched;
     const finalPayout = finalWin ? amount * 2 : 0;
-    const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout) : paid;
+    const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout, { reason: '小游戏中奖派奖：猜硬币正反', actorId: interaction.user.id, actorLabel: actor }) : paid;
     return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(finalWin ? 0x57f287 : 0xed4245).setTitle('🪙 迷你币猜硬币正反').addFields(
       { name: '你的选择', value: choice === 'heads' ? '正面' : '反面', inline: true },
       { name: '硬币结果', value: actual === 'heads' ? '正面' : '反面', inline: true },
@@ -203,7 +204,7 @@ async function playGame(interaction, game, choice, amount) {
   const matched = actual === choice;
   const finalWin = won && matched;
   const finalPayout = finalWin ? amount * 2 : 0;
-  const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout) : paid;
+  const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout, { reason: '小游戏中奖派奖：猜大小', actorId: interaction.user.id, actorLabel: actor }) : paid;
   return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(finalWin ? 0x57f287 : 0xed4245).setTitle('🎲 迷你币猜大小').addFields(
     { name: '你的选择', value: choice === 'high' ? '大' : '小', inline: true },
     { name: '系统结果', value: `${number}（${actual === 'high' ? '大' : '小'}）`, inline: true },

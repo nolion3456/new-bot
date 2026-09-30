@@ -21,8 +21,16 @@ async function handleTransferInteraction(interaction) {
   if (amount === null || amount <= 0) return interaction.reply({ content: '转账金额必须大于 0，且最多支持两位小数。', ephemeral: true });
   const senderBalance = getBalance(interaction.guildId, interaction.user.id);
   if (senderBalance < amount) return interaction.reply({ content: `余额不足。你要转账 ${formatMoney(amount)} ${currency}，当前余额为 ${formatMoney(senderBalance)} ${currency}。`, ephemeral: true });
-  const senderResult = changeBalance(interaction.guildId, interaction.user.id, -amount);
-  const recipientResult = changeBalance(interaction.guildId, recipient.id, amount);
+  const senderResult = changeBalance(interaction.guildId, interaction.user.id, -amount, {
+    reason: `成员转账给 ${recipient.tag}`,
+    actorId: interaction.user.id,
+    actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
+  });
+  const recipientResult = changeBalance(interaction.guildId, recipient.id, amount, {
+    reason: `收到 ${interaction.user.tag} 的成员转账`,
+    actorId: interaction.user.id,
+    actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
+  });
   const embed = new EmbedBuilder()
     .setColor(0x3498db)
     .setTitle('💸 转账成功')

@@ -125,7 +125,10 @@ async function finishAuction(client, guildId) {
   let result;
   if (auction.highestBid) {
     const winner = await client.users.fetch(auction.highestBid.userId).catch(() => null);
-    const payment = changeBalance(guildId, auction.highestBid.userId, -auction.highestBid.amount);
+    const payment = changeBalance(guildId, auction.highestBid.userId, -auction.highestBid.amount, {
+      reason: `拍卖结算扣款：${auction.item}`,
+      actorLabel: '系统（拍卖结算）',
+    });
     result = `🎉 拍卖结束\n\n物品：${auction.item}\n得标者：${winner ? `${winner.tag} (<@${winner.id}>)` : `<@${auction.highestBid.userId}>`}\n成交价格：${formatMoney(auction.highestBid.amount)} ${currency}\n扣款后余额：${formatMoney(payment.after)} ${currency}`;
   } else {
     result = `拍卖结束\n\n物品：${auction.item}\n结果：没有人出价。`;

@@ -154,7 +154,10 @@ async function claimCheckin(interaction) {
   const streakReward = roundMoney(Math.max(0, streak - 1) * config.streakBonus);
   const weeklyReward = weekDays.length >= config.weeklyDays && !(record.week === currentWeek && record.weekRewardClaimed) ? config.weeklyBonus : 0;
   const total = roundMoney(baseReward + streakReward + weeklyReward);
-  const balanceResult = changeBalance(interaction.guildId, userId, total);
+  const balanceResult = changeBalance(interaction.guildId, userId, total, {
+    reason: `每日签到奖励（连续签到 ${streak} 天）`,
+    actorLabel: '系统（每日签到）',
+  });
   config.users[userId] = { lastDay: today, streak, week: currentWeek, weekDays, weekRewardClaimed: weeklyReward > 0 || (record.week === currentWeek && record.weekRewardClaimed) };
   saveData();
   const currency = getGuildData(interaction.guildId).name;

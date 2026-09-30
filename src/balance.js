@@ -80,25 +80,25 @@ function getMajorBalance(guildId, userId) {
   return getGuildData(guildId).majorBalances[userId] || 0;
 }
 
-function changeMajorBalance(guildId, userId, amount) {
+function changeMajorBalance(guildId, userId, amount, metadata = {}) {
   const data = getGuildData(guildId);
   const before = getMajorBalance(guildId, userId);
   const after = roundMoney(before + Number(amount));
   data.majorBalances[userId] = after;
   saveData();
   const result = { before, after, data };
-  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: '余额' })).catch((error) => console.error('Balance audit failed:', error.message));
+  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: '余额', reason: metadata.reason || '余额调整', actorId: metadata.actorId || null, actorLabel: metadata.actorLabel || '系统' })).catch((error) => console.error('Balance audit failed:', error.message));
   return result;
 }
 
-function changeBalance(guildId, userId, amount) {
+function changeBalance(guildId, userId, amount, metadata = {}) {
   const data = getGuildData(guildId);
   const before = getBalance(guildId, userId);
   const after = roundMoney(before + Number(amount));
   data.balances[userId] = after;
   saveData();
   const result = { before, after, data };
-  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: data.name })).catch((error) => console.error('Balance audit failed:', error.message));
+  if (balanceAuditSender) Promise.resolve(balanceAuditSender({ guildId, userId, amount: Number(amount), before, after, currency: data.name, reason: metadata.reason || '余额调整', actorId: metadata.actorId || null, actorLabel: metadata.actorLabel || '系统' })).catch((error) => console.error('Balance audit failed:', error.message));
   return result;
 }
 
@@ -181,10 +181,14 @@ async function handleBalanceInteraction(interaction) {
     const targetId = targetIdFromModal || interaction.user.id;
     const data = getGuildData(interaction.guildId);
     const signedAmount = action === 'add' ? amount : -amount;
-    const { before, after } = changeBalance(interaction.guildId, targetId, signedAmount);
+    const actionLabel = action === 'add' ? '增加' : '减少';
+    const { before, after } = changeBalance(interaction.guildId, targetId, signedAmount, {
+      reason: `管理员手动${actionLabel}余额`,
+      actorId: interaction.user.id,
+      actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
+    });
     const target = await interaction.guild.members.fetch(targetId).catch(() => null);
     const targetLabel = target ? `${target.user.tag} (<@${targetId}>)` : `<@${targetId}>`;
-    const actionLabel = action === 'add' ? '增加' : '减少';
     const changeEmbed = new EmbedBuilder()
       .setColor(action === 'add' ? 0x57f287 : 0xed4245)
       .setTitle(`💰 ${data.name}余额变更`)

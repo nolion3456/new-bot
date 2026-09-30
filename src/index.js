@@ -312,10 +312,11 @@ async function sendAudit(guild, embed, eventType, eventKey = null) {
   }
 }
 
-setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency }) => {
+setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency, reason, actorId, actorLabel }) => {
   const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) return;
   const user = await client.users.fetch(userId).catch(() => null);
+  const actor = actorId ? await client.users.fetch(actorId).catch(() => null) : null;
   const embed = new EmbedBuilder()
     .setColor(amount >= 0 ? 0x57f287 : 0xed4245)
     .setTitle('余额变化')
@@ -325,9 +326,11 @@ setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency 
       { name: '变化数量', value: `${formatMoney(Math.abs(amount))} ${currency}`, inline: true },
       { name: '变化前余额', value: `${formatMoney(before)} ${currency}`, inline: true },
       { name: '变化后余额', value: `${formatMoney(after)} ${currency}`, inline: true },
+      { name: '变化原因', value: reason || '余额调整', inline: false },
+      { name: '操作者', value: actorLabel || (actor ? `${actor.tag} (<@${actorId}>)` : '系统'), inline: false },
     )
     .setTimestamp();
-  await sendAudit(guild, embed, 'balanceChange', `balance:${userId}:${before}:${after}:${amount}`);
+  await sendAudit(guild, embed, 'balanceChange', `balance:${userId}:${before}:${after}:${amount}:${reason || ''}:${actorId || ''}`);
 });
 
 async function findRecentExecutor(guild, type, targetId) {
