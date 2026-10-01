@@ -146,7 +146,7 @@ async function handleExchange(interaction) {
       changeMajorBalance(interaction.guildId, interaction.user.id, -amount, { reason: '兑换：余额兑换迷你币', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
       changeBalance(interaction.guildId, interaction.user.id, result, { reason: '兑换：余额兑换迷你币', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     }
-    return interaction.update({ content: `兑换成功\n\n兑换方向：${direction === 'mini-major' ? `${formatMoney(amount)} ${mini} → ${formatMoney(result)} 余额` : `${formatMoney(amount)} 余额 → ${formatMoney(result)} ${mini}`}\n\n本次兑换结果仅你可见。`, embeds: [], components: [] });
+    return interaction.reply({ content: `兑换成功\n\n兑换方向：${direction === 'mini-major' ? `${formatMoney(amount)} ${mini} → ${formatMoney(result)} 余额` : `${formatMoney(amount)} 余额 → ${formatMoney(result)} ${mini}`}\n\n本次兑换结果仅你可见，公开兑换面板不会改变。`, ephemeral: true });
   }
   return false;
 }
