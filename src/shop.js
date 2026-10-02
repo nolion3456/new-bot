@@ -81,8 +81,8 @@ function adminEmbed(shop, selectedId = null) {
 }
 function adminComponents(shop, selectedId = null) {
   const rows = [new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('shop:admin:add').setLabel('上架商品').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('shop:admin:publish').setLabel('发布公开商城').setStyle(ButtonStyle.Primary).setEmoji('🛒'),
+    new ButtonBuilder().setCustomId('shop:admin:add').setLabel('上架商品').setEmoji('➕').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('shop:admin:publish').setLabel('发布公开商城').setEmoji('🛒').setStyle(ButtonStyle.Primary),
   )];
   if (shop.products.length) {
     const options = shop.products.slice(0, 25).map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id).setDefault(product.id === selectedId));
@@ -90,9 +90,9 @@ function adminComponents(shop, selectedId = null) {
   }
   if (selectedId && selectedProduct(shop, selectedId)) {
     rows.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('shop:admin:edit').setLabel('修改商品').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('shop:admin:toggle').setLabel(selectedProduct(shop, selectedId).active ? '下架商品' : '重新上架').setStyle(selectedProduct(shop, selectedId).active ? ButtonStyle.Danger : ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('shop:admin:delete').setLabel('删除商品').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('shop:admin:edit').setLabel('修改商品').setEmoji('✏️').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('shop:admin:toggle').setLabel(selectedProduct(shop, selectedId).active ? '下架商品' : '重新上架').setEmoji(selectedProduct(shop, selectedId).active ? '📤' : '📥').setStyle(selectedProduct(shop, selectedId).active ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('shop:admin:delete').setLabel('删除商品').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
     ));
   }
   return rows;
@@ -109,17 +109,22 @@ function productModal(mode, product = {}) {
 function publicEmbed() {
   return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 服务器商城').setDescription('点击下方“逛商城”按钮，机器人会私密显示商品列表和购买操作。').setFooter({ text: '所有商品使用大面额余额购买｜购买前会进行二次确认' });
 }
-function browseEmbed(shop) {
-  const products = shop.products.filter((product) => product.active);
+function browseEmbed(shop, showAll = false) {
+  const products = shop.products.filter((product) => product.active && (showAll || product.stock === -1 || product.stock > 0));
   const text = products.length
     ? products.map((product) => `**${product.name}**\n${product.description}\n价格：**${formatMoney(product.price)} 余额**｜${productStatus(product)}`).join('\n\n')
-    : '目前没有可购买的商品。';
-  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛍️ 私密商城').setDescription(text);
+    : (showAll ? '目前没有已上架的商品。' : '目前没有有货的商品，请切换到“查看全部”。');
+  return new EmbedBuilder().setColor(0x9b59b6).setTitle(`🛍️ 私密商城｜${showAll ? '查看全部' : '只看有货'}`).setDescription(text);
 }
-function browseComponents(shop) {
-  const products = shop.products.filter((product) => product.active && (product.stock === -1 || product.stock > 0)).slice(0, 25);
-  if (!products.length) return [];
-  return [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:browse:select').setPlaceholder('选择商品查看并购买').addOptions(products.map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id))))];
+function browseComponents(shop, showAll = false) {
+  const products = shop.products.filter((product) => product.active && (showAll || product.stock === -1 || product.stock > 0)).slice(0, 25);
+  const rows = [];
+  if (products.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:browse:select').setPlaceholder('🛍️ 选择商品查看并购买').addOptions(products.map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id)))));
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('shop:filter:stock').setLabel('只看有货').setEmoji('✅').setStyle(showAll ? ButtonStyle.Secondary : ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('shop:filter:all').setLabel('查看全部').setEmoji('📋').setStyle(showAll ? ButtonStyle.Success : ButtonStyle.Secondary),
+  ));
+  return rows;
 }
 function detailEmbed(product) {
   return new EmbedBuilder().setColor(0x5865f2).setTitle(`📦 ${product.name}`).setDescription(product.description).addFields({ name: '价格', value: `${formatMoney(product.price)} 余额`, inline: true }, { name: '库存', value: product.stock === -1 ? '无限数量' : String(product.stock), inline: true });
@@ -134,34 +139,60 @@ async function handleShop(interaction) {
   if (interaction.isButton() && interaction.customId === 'shop:browse') {
     if (!interaction.inGuild()) return interaction.reply({ content: '此按钮只能在服务器内使用。', ephemeral: true });
     const shop = getShop(interaction.guildId);
-    browseSessions.set(key(interaction), Date.now());
-    return interaction.reply({ embeds: [browseEmbed(shop)], components: browseComponents(shop), ephemeral: true });
+    browseSessions.set(key(interaction), { showAll: false });
+    return interaction.reply({ embeds: [browseEmbed(shop, false)], components: browseComponents(shop, false), ephemeral: true });
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('shop:filter:')) {
+    const showAll = interaction.customId.endsWith(':all');
+    browseSessions.set(key(interaction), { showAll });
+    const shop = getShop(interaction.guildId);
+    return interaction.update({ embeds: [browseEmbed(shop, showAll)], components: browseComponents(shop, showAll) });
   }
   if (interaction.isStringSelectMenu() && interaction.customId === 'shop:browse:select') {
     const product = selectedProduct(getShop(interaction.guildId), interaction.values[0]);
-    if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.update({ content: '这个商品刚刚下架或已经售罄。', embeds: [], components: [] });
-    browseSessions.set(key(interaction), Date.now());
-    return interaction.update({ embeds: [detailEmbed(product)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`shop:buy:${product.id}`).setLabel(`购买（${formatMoney(product.price)} 余额）`).setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:back').setLabel('返回商品列表').setStyle(ButtonStyle.Secondary))] });
+    if (!product || !product.active) return interaction.update({ content: '这个商品刚刚下架。', embeds: [], components: [] });
+    const buttons = [];
+    if (product.stock === -1 || product.stock > 0) buttons.push(new ButtonBuilder().setCustomId(`shop:buy:${product.id}`).setLabel('选择购买数量').setEmoji('🛒').setStyle(ButtonStyle.Success));
+    else buttons.push(new ButtonBuilder().setCustomId('shop:soldout').setLabel('已售罄').setEmoji('⛔').setStyle(ButtonStyle.Secondary).setDisabled(true));
+    buttons.push(new ButtonBuilder().setCustomId('shop:back').setLabel('返回商品列表').setEmoji('↩️').setStyle(ButtonStyle.Secondary));
+    return interaction.update({ embeds: [detailEmbed(product)], components: [new ActionRowBuilder().addComponents(buttons)] });
   }
-  if (interaction.isButton() && interaction.customId === 'shop:back') return interaction.update({ embeds: [browseEmbed(getShop(interaction.guildId))], components: browseComponents(getShop(interaction.guildId)) });
+  if (interaction.isButton() && interaction.customId === 'shop:back') {
+    const showAll = browseSessions.get(key(interaction))?.showAll || false;
+    return interaction.update({ embeds: [browseEmbed(getShop(interaction.guildId), showAll)], components: browseComponents(getShop(interaction.guildId), showAll) });
+  }
   if (interaction.isButton() && interaction.customId.startsWith('shop:buy:')) {
     const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[2]);
     if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.reply({ content: '这个商品刚刚下架或已经售罄。', ephemeral: true });
-    return interaction.update({ embeds: [detailEmbed(product).setDescription(`${product.description}\n\n⚠️ 你即将花费 **${formatMoney(product.price)} 余额** 购买此商品，请确认。`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`shop:confirm:${product.id}`).setLabel('确认购买').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary))] });
+    return interaction.showModal(new ModalBuilder().setCustomId(`shop:quantity:${product.id}`).setTitle('选择购买数量').addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('quantity').setLabel('购买数量').setPlaceholder(product.stock === -1 ? '请输入正整数，例如 2' : `请输入 1-${product.stock} 之间的数量`).setStyle(TextInputStyle.Short).setRequired(true))));
   }
   if (interaction.isButton() && interaction.customId === 'shop:cancel') return interaction.update({ content: '已取消购买。', embeds: [], components: [] });
-  if (interaction.isButton() && interaction.customId.startsWith('shop:confirm:')) {
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('shop:quantity:')) {
     const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[2]);
+    const quantity = Number(interaction.fields.getTextInputValue('quantity').trim());
+    if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.reply({ content: '这个商品刚刚下架或已经售罄。', ephemeral: true });
+    if (!Number.isInteger(quantity) || quantity < 1 || (product.stock !== -1 && quantity > product.stock)) return interaction.reply({ content: `购买数量必须是正整数${product.stock === -1 ? '' : `，且不能超过库存 ${product.stock}`}。`, ephemeral: true });
+    const total = Math.round(product.price * quantity * 100) / 100;
+    return interaction.reply({ embeds: [detailEmbed(product).setDescription(`${product.description}\n\n⚠️ 请确认购买数量和总价。`)
+      .addFields({ name: '购买数量', value: String(quantity), inline: true }, { name: '应付总价', value: `${formatMoney(total)} 余额`, inline: true })], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`shop:confirm:${product.id}:${quantity}`).setLabel('确认购买').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cancel').setLabel('取消购买').setEmoji('❌').setStyle(ButtonStyle.Secondary))], ephemeral: true });
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('shop:confirm:')) {
+    const [, , productId, quantityText] = interaction.customId.split(':');
+    const quantity = Number(quantityText);
+    const product = selectedProduct(getShop(interaction.guildId), productId);
     if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.update({ content: '购买失败：商品已下架或售罄。', embeds: [], components: [] });
+    if (!Number.isInteger(quantity) || quantity < 1 || (product.stock !== -1 && quantity > product.stock)) return interaction.update({ content: '购买失败：库存不足，请重新选择数量。', embeds: [], components: [] });
+    const total = Math.round(product.price * quantity * 100) / 100;
     const balance = getMajorBalance(interaction.guildId, interaction.user.id);
-    if (balance < product.price) return interaction.update({ content: `购买失败：余额不足，需要 ${formatMoney(product.price)} 余额，你目前有 ${formatMoney(balance)} 余额。`, embeds: [], components: [] });
+    if (balance < total) return interaction.update({ content: `购买失败：余额不足，需要 ${formatMoney(total)} 余额，你目前有 ${formatMoney(balance)} 余额。`, embeds: [], components: [] });
     const shop = getShop(interaction.guildId);
     const current = selectedProduct(shop, product.id);
     if (!current || !current.active || (current.stock !== -1 && current.stock <= 0)) return interaction.update({ content: '购买失败：商品库存刚刚发生变化。', embeds: [], components: [] });
-    changeMajorBalance(interaction.guildId, interaction.user.id, -current.price, { reason: `商城购买：${current.name}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
-    if (current.stock !== -1) current.stock -= 1;
+    if (current.stock !== -1 && quantity > current.stock) return interaction.update({ content: '购买失败：商品库存刚刚发生变化。', embeds: [], components: [] });
+    changeMajorBalance(interaction.guildId, interaction.user.id, -total, { reason: `商城购买：${current.name} × ${quantity}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    if (current.stock !== -1) current.stock -= quantity;
     saveData();
-    return interaction.update({ content: `购买成功\n\n商品：${current.name}\n价格：${formatMoney(current.price)} 余额\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额`, embeds: [], components: [] });
+    return interaction.update({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} 余额\n支付总价：${formatMoney(total)} 余额\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额`, embeds: [], components: [] });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:admin:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
@@ -172,7 +203,7 @@ async function handleShop(interaction) {
     if (action === 'publish') {
       shops.set(interaction.guildId, session.shop); saveData(); sessions.delete(key(interaction));
       await interaction.update({ content: '商城商品已保存，公开商城面板已发布到当前频道。', embeds: [], components: [] });
-      return interaction.channel.send({ embeds: [publicEmbed()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:browse').setLabel('逛商城').setEmoji('🛒').setStyle(ButtonStyle.Primary))] });
+      return interaction.channel.send({ embeds: [publicEmbed()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:browse').setLabel('逛商城').setEmoji('🛍️').setStyle(ButtonStyle.Primary))] });
     }
     const product = selectedProduct(session.shop, session.selectedId);
     if (!product) return interaction.reply({ content: '请先从下拉菜单选择商品。', ephemeral: true });
