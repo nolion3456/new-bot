@@ -23,6 +23,7 @@ const shops = new Map();
 const tickets = new Map();
 const sessions = new Map();
 const browseSessions = new Map();
+const carts = new Map();
 
 const shopCommand = new SlashCommandBuilder()
   .setName('shop')
@@ -159,6 +160,45 @@ function browseComponents(shop, showAll = false) {
 function detailEmbed(product) {
   return new EmbedBuilder().setColor(0x5865f2).setTitle(`📦 ${product.name}`).setDescription(product.description).addFields({ name: '价格', value: `${formatMoney(product.price)} 余额`, inline: true }, { name: '库存', value: product.stock === -1 ? '无限数量' : String(product.stock), inline: true });
 }
+function cartKey(interaction) { return `${interaction.guildId}:${interaction.user.id}`; }
+function getCart(interaction) {
+  if (!carts.has(cartKey(interaction))) carts.set(cartKey(interaction), []);
+  return carts.get(cartKey(interaction));
+}
+function cartEmbed(interaction) {
+  const cart = getCart(interaction);
+  const shop = getShop(interaction.guildId);
+  const lines = cart.length ? cart.map((item) => {
+    const product = selectedProduct(shop, item.productId);
+    const price = product?.price ?? item.price;
+    return `**${product?.name || item.name}** × ${item.quantity}｜${formatMoney(price * item.quantity)} 余额`;
+  }) : ['购物车目前是空的。'];
+  const total = cart.reduce((sum, item) => {
+    const product = selectedProduct(shop, item.productId);
+    return sum + (product?.price ?? item.price) * item.quantity;
+  }, 0);
+  return new EmbedBuilder().setColor(0x2ecc71).setTitle('🛒 我的购物车').setDescription(lines.join('\n')).addFields({ name: '商品种类', value: String(cart.length), inline: true }, { name: '预计总价', value: `${formatMoney(total)} 余额`, inline: true });
+}
+function cartComponents(interaction) {
+  const hasItems = getCart(interaction).length > 0;
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('shop:cart:checkout').setLabel('结算购物车').setEmoji('💳').setStyle(ButtonStyle.Success).setDisabled(!hasItems),
+    new ButtonBuilder().setCustomId('shop:cart:clear').setLabel('清空购物车').setEmoji('🗑️').setStyle(ButtonStyle.Danger).setDisabled(!hasItems),
+    new ButtonBuilder().setCustomId('shop:continue').setLabel('继续购物').setEmoji('🛍️').setStyle(ButtonStyle.Primary),
+  )];
+}
+function currentCart(interaction) {
+  const cart = getCart(interaction);
+  const shop = getShop(interaction.guildId);
+  const items = [];
+  for (const item of cart) {
+    const product = selectedProduct(shop, item.productId);
+    if (!product || !product.active) return { error: `${item.name} 已下架。` };
+    if (product.stock !== -1 && product.stock < item.quantity) return { error: `${product.name} 库存不足，目前只有 ${product.stock} 件。` };
+    items.push({ productId: product.id, name: product.name, quantity: item.quantity, price: product.price, subtotal: Math.round(product.price * item.quantity * 100) / 100 });
+  }
+  return { items, total: Math.round(items.reduce((sum, item) => sum + item.subtotal, 0) * 100) / 100 };
+}
 function safeChannelName(value) {
   return String(value || 'user').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 70) || 'user';
 }
@@ -167,9 +207,10 @@ function ticketName(ticket, status = 'open') {
   return `${prefix}-${safeChannelName(ticket.buyerName)}`.slice(0, 100);
 }
 function ticketEmbed(ticket) {
+  const itemText = ticket.items?.length ? ticket.items.map((item) => `${item.name} × ${item.quantity}`).join('\n') : ticket.productName;
   return new EmbedBuilder().setColor(ticket.claimedBy ? 0xf1c40f : 0x2ecc71).setTitle('🧾 商城购买工单').setDescription('管理员可以点击“认领”开始处理；处理完成后点击“关单”。').addFields(
     { name: '购买成员', value: `<@${ticket.buyerId}>`, inline: true },
-    { name: '商品', value: ticket.productName, inline: true },
+    { name: '商品', value: itemText.slice(0, 1024), inline: false },
     { name: '数量', value: String(ticket.quantity), inline: true },
     { name: '支付总价', value: `${formatMoney(ticket.total)} 余额`, inline: true },
     { name: '状态', value: ticket.closed ? '已关闭' : ticket.claimedBy ? `处理中（<@${ticket.claimedBy}>）` : '等待认领', inline: true },
@@ -183,7 +224,8 @@ function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 function ticketHtml(ticket) {
-  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:760px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd>${escapeHtml(ticket.productName)}</dd><dt>数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl>`;
+  const items = ticket.items?.length ? ticket.items.map((item) => `<li>${escapeHtml(item.name)} × ${item.quantity}</li>`).join('') : `<li>${escapeHtml(ticket.productName)} × ${ticket.quantity}</li>`;
+  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:760px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd><ul>${items}</ul></dd><dt>商品总数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl>`;
 }
 async function createTicket(interaction, ticket) {
   const shop = getShop(interaction.guildId);
@@ -273,7 +315,10 @@ async function handleShop(interaction) {
     const product = selectedProduct(getShop(interaction.guildId), interaction.values[0]);
     if (!product || !product.active) return interaction.update({ content: '这个商品刚刚下架。', embeds: [], components: [] });
     const buttons = [];
-    if (product.stock === -1 || product.stock > 0) buttons.push(new ButtonBuilder().setCustomId(`shop:buy:${product.id}`).setLabel('选择购买数量').setEmoji('🛒').setStyle(ButtonStyle.Success));
+    if (product.stock === -1 || product.stock > 0) {
+      buttons.push(new ButtonBuilder().setCustomId(`shop:cart:add:${product.id}`).setLabel('加入购物车').setEmoji('🛒').setStyle(ButtonStyle.Primary));
+      buttons.push(new ButtonBuilder().setCustomId(`shop:buy:${product.id}`).setLabel('立即购买').setEmoji('⚡').setStyle(ButtonStyle.Success));
+    }
     else buttons.push(new ButtonBuilder().setCustomId('shop:soldout').setLabel('已售罄').setEmoji('⛔').setStyle(ButtonStyle.Secondary).setDisabled(true));
     buttons.push(new ButtonBuilder().setCustomId('shop:back').setLabel('返回商品列表').setEmoji('↩️').setStyle(ButtonStyle.Secondary));
     return interaction.update({ embeds: [detailEmbed(product)], components: [new ActionRowBuilder().addComponents(buttons)] });
@@ -281,6 +326,63 @@ async function handleShop(interaction) {
   if (interaction.isButton() && interaction.customId === 'shop:back') {
     const showAll = browseSessions.get(key(interaction))?.showAll || false;
     return interaction.update({ embeds: [browseEmbed(getShop(interaction.guildId), showAll)], components: browseComponents(getShop(interaction.guildId), showAll) });
+  }
+  if (interaction.isButton() && interaction.customId === 'shop:continue') {
+    const showAll = browseSessions.get(key(interaction))?.showAll || false;
+    return interaction.update({ embeds: [browseEmbed(getShop(interaction.guildId), showAll)], components: browseComponents(getShop(interaction.guildId), showAll) });
+  }
+  if (interaction.isButton() && interaction.customId === 'shop:cart:view') return interaction.update({ embeds: [cartEmbed(interaction)], components: cartComponents(interaction) });
+  if (interaction.isButton() && interaction.customId === 'shop:cart:clear') {
+    carts.set(cartKey(interaction), []);
+    return interaction.update({ content: '购物车已清空。', embeds: [cartEmbed(interaction)], components: cartComponents(interaction) });
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('shop:cart:add:')) {
+    const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[3]);
+    if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.reply({ content: '这个商品刚刚下架或已经售罄。', ephemeral: true });
+    return interaction.showModal(new ModalBuilder().setCustomId(`shop:cart:quantity:${product.id}`).setTitle('加入购物车').addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('quantity').setLabel('加入数量').setPlaceholder(product.stock === -1 ? '请输入正整数，例如 2' : `请输入 1-${product.stock} 之间的数量`).setStyle(TextInputStyle.Short).setRequired(true))));
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('shop:cart:quantity:')) {
+    const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[3]);
+    const quantity = Number(interaction.fields.getTextInputValue('quantity').trim());
+    if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.reply({ content: '这个商品刚刚下架或已经售罄。', ephemeral: true });
+    if (!Number.isInteger(quantity) || quantity < 1 || (product.stock !== -1 && quantity > product.stock)) return interaction.reply({ content: `加入数量必须是正整数${product.stock === -1 ? '' : `，且不能超过库存 ${product.stock}`}。`, ephemeral: true });
+    const cart = getCart(interaction);
+    const existing = cart.find((item) => item.productId === product.id);
+    if (existing) existing.quantity += quantity;
+    else cart.push({ productId: product.id, name: product.name, price: product.price, quantity });
+    return interaction.reply({ content: `已将 **${product.name} × ${quantity}** 加入购物车。你可以继续挑选其他商品，最后统一结算。`, embeds: [cartEmbed(interaction)], components: cartComponents(interaction), ephemeral: true });
+  }
+  if (interaction.isButton() && interaction.customId === 'shop:cart:checkout') {
+    const summary = currentCart(interaction);
+    if (summary.error) return interaction.reply({ content: `无法结算：${summary.error}`, ephemeral: true });
+    if (!summary.items.length) return interaction.reply({ content: '购物车目前是空的。', ephemeral: true });
+    const balance = getMajorBalance(interaction.guildId, interaction.user.id);
+    if (balance < summary.total) return interaction.reply({ content: `余额不足，需要 ${formatMoney(summary.total)} 余额，你目前有 ${formatMoney(balance)} 余额。`, ephemeral: true });
+    const itemText = summary.items.map((item) => `${item.name} × ${item.quantity}`).join('\n');
+    return interaction.update({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('⚠️ 确认结算购物车').setDescription(`${itemText}\n\n应付总价：**${formatMoney(summary.total)} 余额**\n\n请确认后才会统一扣款并创建一个合并工单。`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:cart:confirm').setLabel('确认结算').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cart:cancel').setLabel('返回购物车').setEmoji('↩️').setStyle(ButtonStyle.Secondary))] });
+  }
+  if (interaction.isButton() && interaction.customId === 'shop:cart:cancel') return interaction.update({ embeds: [cartEmbed(interaction)], components: cartComponents(interaction) });
+  if (interaction.isButton() && interaction.customId === 'shop:cart:confirm') {
+    const summary = currentCart(interaction);
+    if (summary.error) return interaction.update({ content: `结算失败：${summary.error}`, embeds: [], components: [] });
+    const balance = getMajorBalance(interaction.guildId, interaction.user.id);
+    if (!summary.items.length || balance < summary.total) return interaction.update({ content: '结算失败：购物车为空或余额不足。', embeds: [], components: [] });
+    const shop = getShop(interaction.guildId);
+    for (const item of summary.items) {
+      const current = selectedProduct(shop, item.productId);
+      if (!current || !current.active || (current.stock !== -1 && current.stock < item.quantity)) return interaction.update({ content: `结算失败：${item.name} 的库存刚刚发生变化，请重新检查购物车。`, embeds: [], components: [] });
+    }
+    changeMajorBalance(interaction.guildId, interaction.user.id, -summary.total, { reason: `商城购物车结算：${summary.items.length} 种商品`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    for (const item of summary.items) {
+      const current = selectedProduct(shop, item.productId);
+      if (current.stock !== -1) current.stock -= item.quantity;
+    }
+    saveData();
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: `${summary.items.length} 种商品`, quantity: summary.items.reduce((sum, item) => sum + item.quantity, 0), total: summary.total, items: summary.items, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, closedAt: null };
+    carts.set(cartKey(interaction), []);
+    await interaction.deferUpdate();
+    const ticketChannel = await createTicket(interaction, ticket).catch((error) => { console.error('Failed to create shop cart ticket:', error.message); return null; });
+    return interaction.editReply({ content: `购物车结算成功\n\n商品种类：${summary.items.length}\n商品总数量：${ticket.quantity}\n支付总价：${formatMoney(summary.total)} 余额\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额\n\n${ticketChannel ? `合并工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:buy:')) {
     const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[2]);
