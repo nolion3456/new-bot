@@ -365,7 +365,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
