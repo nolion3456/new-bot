@@ -115,19 +115,16 @@ function attachmentSummary(message) {
   const embeds = [...(message.embeds || [])];
   const snapshots = [...(message.messageSnapshots?.values?.() || [])];
   const references = message.reference?.messageId ? `引用消息：${message.reference.messageId}` : '';
-  const attachmentText = attachments.length
-    ? attachments.map((attachment) => `${attachment.name || '附件'}：${attachment.url}`).join('\n')
-    : '无图片或附件';
-  const embedText = embeds.length
-    ? embeds.map((embed) => embed.url || embed.title || '嵌入内容').join('\n')
-    : '无嵌入内容';
+  const media = attachments.map((attachment) => attachment.url).filter(Boolean);
+  const embedText = embeds.map((embed) => embed.url || embed.title || '嵌入内容').filter(Boolean).join('\n');
   const forwardedText = snapshots.length
     ? snapshots.map((snapshot) => {
-      const snapshotAttachments = [...(snapshot.attachments?.values?.() || [])].map((attachment) => attachment.url).join('\n');
-      return `转发内容：${snapshot.content || '(无文字)'}${snapshotAttachments ? `\n转发附件：${snapshotAttachments}` : ''}`;
+      const snapshotAttachments = [...(snapshot.attachments?.values?.() || [])].map((attachment) => attachment.url).filter(Boolean);
+      media.push(...snapshotAttachments);
+      return `转发内容：${snapshot.content || '(无文字)'}${snapshotAttachments.length ? `\n转发附件：${snapshotAttachments.join('\n')}` : ''}`;
     }).join('\n')
     : '';
-  return { attachmentText: clip(attachmentText, 1000), embedText: clip([references, embedText, forwardedText].filter(Boolean).join('\n'), 1000) };
+  return { media: [...new Set(media)], embedText: clip([references, embedText, forwardedText].filter(Boolean).join('\n'), 1000) };
 }
 
 function attachmentSignature(message) {
@@ -286,7 +283,7 @@ async function registerCommands() {
   console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId} (old global copies removed)` : 'globally (old guild copies removed)'}.`);
 }
 
-async function sendAudit(guild, embed, eventType, eventKey = null) {
+async function sendAudit(guild, embed, eventType, eventKey = null, options = {}) {
   const channelIds = [...new Set(auditChannelsByGuild.get(guild.id) || [])];
   if (!channelIds.length) return;
   const embedData = embed.toJSON();
@@ -305,7 +302,9 @@ async function sendAudit(guild, embed, eventType, eventKey = null) {
     recentAuditDeliveries.set(deliveryKey, now);
     const channel = await guild.channels.fetch(channelId).catch(() => null);
     if (!channel?.isTextBased()) continue;
-    await channel.send({ embeds: [embed] }).catch((error) => {
+    const payload = { embeds: [embed] };
+    if (options.content) payload.content = clip(options.content, 1900);
+    await channel.send(payload).catch((error) => {
       console.error(`Failed to send audit log to ${channelId}:`, error.message);
     });
   }
@@ -638,43 +637,46 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
   const author = newMessage.author || oldMessage.author;
   const oldExtra = attachmentSummary(oldMessage);
   const newExtra = attachmentSummary(newMessage);
+  const mediaLinks = [
+    ...oldExtra.media.map((url) => `编辑前附件：${url}`),
+    ...newExtra.media.map((url) => `编辑后附件：${url}`),
+  ].join('\n');
+  const fields = [
+    { name: '发送者', value: author ? `${author.tag} (<@${author.id}>)` : '无法确认', inline: false },
+    { name: '频道', value: `<#${newMessage.channelId}>`, inline: true },
+    { name: '消息发送时间', value: `<t:${Math.floor((newMessage.createdTimestamp || Date.now()) / 1000)}:F>`, inline: true },
+    { name: '编辑时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+    { name: '编辑前文字', value: code(oldMessage.content || '(无法取得原文字)') },
+    { name: '编辑后文字', value: code(newMessage.content || '(已清空文字)') },
+  ];
+  if (newExtra.embedText) fields.push({ name: '引用/嵌入内容', value: newExtra.embedText });
   const embed = new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('消息编辑')
-    .addFields(
-      { name: '发送者', value: author ? `${author.tag} (<@${author.id}>)` : '无法确认', inline: false },
-      { name: '频道', value: `<#${newMessage.channelId}>`, inline: true },
-      { name: '消息发送时间', value: `<t:${Math.floor((newMessage.createdTimestamp || Date.now()) / 1000)}:F>`, inline: true },
-      { name: '编辑时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
-      { name: '编辑前文字', value: code(oldMessage.content || '(无法取得原文字)') },
-      { name: '编辑后文字', value: code(newMessage.content || '(已清空文字)') },
-      { name: '编辑前图片/附件', value: oldExtra.attachmentText },
-      { name: '编辑后图片/附件', value: newExtra.attachmentText },
-      { name: '引用/嵌入内容', value: newExtra.embedText },
-    )
+    .addFields(fields)
     .setFooter({ text: `Message ID: ${newMessage.id}` });
-  await sendAudit(newMessage.guild, embed, 'messageEdit', `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`);
+  await sendAudit(newMessage.guild, embed, 'messageEdit', `message-edit:${newMessage.id}:${oldMessage.content || ''}:${newMessage.content || ''}`, { content: mediaLinks });
 });
 
 client.on('messageDelete', async (message) => {
   if (!message.guild || message.author?.bot || isAuditChannel(message.channelId, message.guild.id)) return;
   const deleter = await findRecentExecutor(message.guild, AuditLogEvent.MessageDelete, message.author?.id);
   const extra = attachmentSummary(message);
+  const fields = [
+    { name: '发送者', value: message.author ? `${message.author.tag} (<@${message.author.id}>)` : '无法确认', inline: false },
+    { name: '删除者', value: deleter ? `${deleter.tag} (<@${deleter.id}>)` : '发送者本人或无法确认', inline: false },
+    { name: '频道', value: `<#${message.channelId}>`, inline: true },
+    { name: '发送时间', value: `<t:${Math.floor((message.createdTimestamp || Date.now()) / 1000)}:F>`, inline: true },
+    { name: '删除时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+    { name: '删除前文字', value: code(message.content || '(无法取得文字内容)') },
+  ];
+  if (extra.embedText) fields.push({ name: '引用/嵌入内容', value: extra.embedText });
   const embed = new EmbedBuilder()
     .setColor(0xe74c3c)
     .setTitle('消息删除')
-    .addFields(
-      { name: '发送者', value: message.author ? `${message.author.tag} (<@${message.author.id}>)` : '无法确认', inline: false },
-      { name: '删除者', value: deleter ? `${deleter.tag} (<@${deleter.id}>)` : '发送者本人或无法确认', inline: false },
-      { name: '频道', value: `<#${message.channelId}>`, inline: true },
-      { name: '发送时间', value: `<t:${Math.floor((message.createdTimestamp || Date.now()) / 1000)}:F>`, inline: true },
-      { name: '删除时间', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
-      { name: '删除前文字', value: code(message.content || '(无法取得文字内容)') },
-      { name: '图片/附件', value: extra.attachmentText },
-      { name: '引用/嵌入内容', value: extra.embedText },
-    )
+    .addFields(fields)
     .setFooter({ text: `Message ID: ${message.id}` });
-  await sendAudit(message.guild, embed, 'messageDelete', `message-delete:${message.id}`);
+  await sendAudit(message.guild, embed, 'messageDelete', `message-delete:${message.id}`, { content: extra.media.map((url) => `附件：${url}`).join('\n') });
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
