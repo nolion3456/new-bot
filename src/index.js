@@ -21,6 +21,7 @@ const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
 const { transferCommand, setupTransfers } = require('./transfer');
 const { exchangeCommand, setupExchange } = require('./exchange');
+const { shopCommand, setupShop } = require('./shop');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -71,6 +72,7 @@ const commands = [
   gambleCommand,
   transferCommand,
   exchangeCommand,
+  shopCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -364,7 +366,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -473,6 +475,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/gamble` 管理员打开私密设置并发布小游戏大厅',
           '`/transfer` 转账迷你币给指定成员，并私讯收款人',
           '`/exchange` 管理员设置并发布公开兑换面板',
+          '`/shop` 管理员设置并发布公开商城面板',
           '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
@@ -682,4 +685,5 @@ setupAuctions(client);
 setupGambling(client);
 setupTransfers(client);
 setupExchange(client);
+setupShop(client);
 client.login(token);
