@@ -4,6 +4,8 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelSelectMenuBuilder,
+  ChannelType,
   EmbedBuilder,
   ModalBuilder,
   PermissionFlagsBits,
@@ -18,6 +20,7 @@ const { changeMajorBalance, getMajorBalance, formatMoney, parseMoney } = require
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'shop.json');
 const shops = new Map();
+const tickets = new Map();
 const sessions = new Map();
 const browseSessions = new Map();
 
@@ -27,7 +30,7 @@ const shopCommand = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString());
 
 function defaultShop() {
-  return { nextId: 1, products: [] };
+  return { nextId: 1, products: [], ticketCategoryId: null, recordChannelId: null };
 }
 function normalizeProduct(product, fallbackId) {
   return {
@@ -46,6 +49,8 @@ function loadData() {
       shops.set(guildId, {
         nextId: Number(shop.nextId) || 1,
         products: (shop.products || []).map((product, index) => normalizeProduct(product, index + 1)),
+        ticketCategoryId: shop.ticketCategoryId || null,
+        recordChannelId: shop.recordChannelId || null,
       });
     }
   } catch (error) {
@@ -57,6 +62,22 @@ function saveData() {
   const temporary = `${dataFile}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(shops.entries()), null, 2));
   fs.renameSync(temporary, dataFile);
+}
+function loadTickets() {
+  try {
+    const file = path.join(dataDir, 'shop-tickets.json');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const [channelId, ticket] of Object.entries(raw)) tickets.set(channelId, ticket);
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Failed to load shop tickets:', error.message);
+  }
+}
+function saveTickets() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const file = path.join(dataDir, 'shop-tickets.json');
+  const temporary = `${file}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(tickets.entries()), null, 2));
+  fs.renameSync(temporary, file);
 }
 function getShop(guildId) {
   if (!shops.has(guildId)) shops.set(guildId, defaultShop());
@@ -77,13 +98,22 @@ function adminEmbed(shop, selectedId = null) {
   const lines = shop.products.length
     ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} 余额｜${productStatus(product)}${selectedId === product.id ? ' ← 当前选择' : ''}`)
     : ['目前还没有商品，请先点击“上架商品”。'];
-  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription('这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 `-1` 代表无限数量。\n\n' + lines.join('\n')).setFooter({ text: '点击“发布公开商城”后，成员可在当前频道逛商城' });
+  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription('这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 `-1` 代表无限数量。\n\n' + lines.join('\n')).addFields(
+    { name: '工单分类', value: shop.ticketCategoryId ? `<#${shop.ticketCategoryId}>` : '未设置（自动放在最上方）', inline: true },
+    { name: '记录频道', value: shop.recordChannelId ? `<#${shop.recordChannelId}>` : '未设置（生成记录时需要设置）', inline: true },
+  ).setFooter({ text: '点击“发布公开商城”后，成员可在当前频道逛商城' });
 }
 function adminComponents(shop, selectedId = null) {
   const rows = [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('shop:admin:add').setLabel('上架商品').setEmoji('➕').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId('shop:admin:publish').setLabel('发布公开商城').setEmoji('🛒').setStyle(ButtonStyle.Primary),
   )];
+  const categorySelect = new ChannelSelectMenuBuilder().setCustomId('shop:admin:category').setPlaceholder('🗂️ 设置工单分类（可选）').setChannelTypes(ChannelType.GuildCategory);
+  if (shop.ticketCategoryId) categorySelect.setDefaultChannels(shop.ticketCategoryId);
+  rows.push(new ActionRowBuilder().addComponents(categorySelect));
+  const recordSelect = new ChannelSelectMenuBuilder().setCustomId('shop:admin:record-channel').setPlaceholder('🧾 设置记录发送频道（可选）').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
+  if (shop.recordChannelId) recordSelect.setDefaultChannels(shop.recordChannelId);
+  rows.push(new ActionRowBuilder().addComponents(recordSelect));
   if (shop.products.length) {
     const options = shop.products.slice(0, 25).map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id).setDefault(product.id === selectedId));
     rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:admin:select').setPlaceholder('选择要管理的商品').addOptions(options)));
@@ -129,12 +159,103 @@ function browseComponents(shop, showAll = false) {
 function detailEmbed(product) {
   return new EmbedBuilder().setColor(0x5865f2).setTitle(`📦 ${product.name}`).setDescription(product.description).addFields({ name: '价格', value: `${formatMoney(product.price)} 余额`, inline: true }, { name: '库存', value: product.stock === -1 ? '无限数量' : String(product.stock), inline: true });
 }
+function safeChannelName(value) {
+  return String(value || 'user').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 70) || 'user';
+}
+function ticketName(ticket, status = 'open') {
+  const prefix = status === 'processing' ? '处理中' : '购买物品';
+  return `${prefix}-${safeChannelName(ticket.buyerName)}`.slice(0, 100);
+}
+function ticketEmbed(ticket) {
+  return new EmbedBuilder().setColor(ticket.claimedBy ? 0xf1c40f : 0x2ecc71).setTitle('🧾 商城购买工单').setDescription('管理员可以点击“认领”开始处理；处理完成后点击“关单”。').addFields(
+    { name: '购买成员', value: `<@${ticket.buyerId}>`, inline: true },
+    { name: '商品', value: ticket.productName, inline: true },
+    { name: '数量', value: String(ticket.quantity), inline: true },
+    { name: '支付总价', value: `${formatMoney(ticket.total)} 余额`, inline: true },
+    { name: '状态', value: ticket.closed ? '已关闭' : ticket.claimedBy ? `处理中（<@${ticket.claimedBy}>）` : '等待认领', inline: true },
+  ).setFooter({ text: `工单创建时间：${new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` });
+}
+function ticketComponents(ticket) {
+  if (ticket.closed) return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:reopen').setLabel('重新开单').setEmoji('🔓').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:ticket:record').setLabel('生成记录').setEmoji('🧾').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('shop:ticket:delete').setLabel('直接关单').setEmoji('🗑️').setStyle(ButtonStyle.Danger))];
+  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:claim').setLabel(ticket.claimedBy ? '已认领' : '认领工单').setEmoji('🙋').setStyle(ticket.claimedBy ? ButtonStyle.Secondary : ButtonStyle.Primary).setDisabled(Boolean(ticket.claimedBy)), new ButtonBuilder().setCustomId('shop:ticket:close').setLabel('关单').setEmoji('🔒').setStyle(ButtonStyle.Danger))];
+}
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+function ticketHtml(ticket) {
+  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:760px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd>${escapeHtml(ticket.productName)}</dd><dt>数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl>`;
+}
+async function createTicket(interaction, ticket) {
+  const shop = getShop(interaction.guildId);
+  const everyone = interaction.guild.roles.everyone;
+  const overwrites = [
+    { id: everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: ticket.buyerId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] },
+    { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.AttachFiles] },
+  ];
+  for (const role of interaction.guild.roles.cache.values()) if (role.permissions.has(PermissionFlagsBits.ManageGuild)) overwrites.push({ id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles] });
+  const channel = await interaction.guild.channels.create({ name: ticketName(ticket), type: ChannelType.GuildText, parent: shop.ticketCategoryId || undefined, permissionOverwrites: overwrites });
+  ticket.channelId = channel.id;
+  tickets.set(channel.id, ticket);
+  saveTickets();
+  await channel.send({ content: `<@${ticket.buyerId}>`, embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
+  return channel;
+}
 async function handleShop(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'shop') {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
     const shop = JSON.parse(JSON.stringify(getShop(interaction.guildId)));
     sessions.set(key(interaction), { shop, selectedId: null });
     return interaction.reply({ embeds: [adminEmbed(shop)], components: adminComponents(shop), ephemeral: true });
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('shop:ticket:')) {
+    if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以处理商城工单。', ephemeral: true });
+    const ticket = tickets.get(interaction.channelId);
+    if (!ticket) return interaction.reply({ content: '找不到这个工单记录。', ephemeral: true });
+    const action = interaction.customId.split(':')[2];
+    if (action === 'claim') {
+      if (ticket.claimedBy) return interaction.reply({ content: '这个工单已经被其他管理员认领。', ephemeral: true });
+      ticket.claimedBy = interaction.user.id;
+      ticket.claimedByName = interaction.user.tag;
+      await interaction.channel.setName(ticketName(ticket, 'processing')).catch(() => null);
+      saveTickets();
+      return interaction.update({ embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
+    }
+    if (action === 'close') {
+      ticket.closed = true;
+      ticket.closedAt = Date.now();
+      saveTickets();
+      return interaction.update({ embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
+    }
+    if (action === 'reopen') {
+      ticket.closed = false;
+      ticket.closedAt = null;
+      await interaction.channel.setName(ticketName(ticket, ticket.claimedBy ? 'processing' : 'open')).catch(() => null);
+      saveTickets();
+      return interaction.update({ embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
+    }
+    if (action === 'record') {
+      const shop = getShop(interaction.guildId);
+      const channel = shop.recordChannelId ? await interaction.guild.channels.fetch(shop.recordChannelId).catch(() => null) : null;
+      if (!channel?.isTextBased()) return interaction.reply({ content: '还没有设置记录发送频道，请管理员在 `/shop` 私密面板中设置。', ephemeral: true });
+      await channel.send({ content: `🧾 商城购买记录｜${ticket.productName}｜${ticket.buyerName}`, files: [{ attachment: Buffer.from(ticketHtml(ticket), 'utf8'), name: `shop-ticket-${ticket.channelId}.html` }] });
+      return interaction.reply({ content: `记录已生成并发送到 <#${channel.id}>，HTML 文件可以直接用浏览器打开或下载。`, ephemeral: true });
+    }
+    if (action === 'delete') {
+      tickets.delete(interaction.channelId);
+      saveTickets();
+      await interaction.reply({ content: '工单将被删除。', ephemeral: true });
+      return interaction.channel.delete('商城工单直接关单');
+    }
+  }
+  if (interaction.isChannelSelectMenu?.() && interaction.customId.startsWith('shop:admin:')) {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
+    const action = interaction.customId.split(':')[2];
+    if (action === 'category') session.shop.ticketCategoryId = interaction.values[0] || null;
+    if (action === 'record-channel') session.shop.recordChannelId = interaction.values[0] || null;
+    return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
   }
   if (interaction.isButton() && interaction.customId === 'shop:browse') {
     if (!interaction.inGuild()) return interaction.reply({ content: '此按钮只能在服务器内使用。', ephemeral: true });
@@ -192,7 +313,13 @@ async function handleShop(interaction) {
     changeMajorBalance(interaction.guildId, interaction.user.id, -total, { reason: `商城购买：${current.name} × ${quantity}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     if (current.stock !== -1) current.stock -= quantity;
     saveData();
-    return interaction.update({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} 余额\n支付总价：${formatMoney(total)} 余额\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额`, embeds: [], components: [] });
+    await interaction.deferUpdate();
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: current.name, quantity, total, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, closedAt: null };
+    const ticketChannel = await createTicket(interaction, ticket).catch((error) => {
+      console.error('Failed to create shop ticket:', error.message);
+      return null;
+    });
+    return interaction.editReply({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} 余额\n支付总价：${formatMoney(total)} 余额\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额\n\n${ticketChannel ? `工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:admin:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
@@ -244,6 +371,7 @@ async function handleShop(interaction) {
 }
 function setupShop(client) {
   loadData();
+  loadTickets();
   client.on('interactionCreate', (interaction) => handleShop(interaction).catch((error) => {
     console.error('Shop interaction failed:', error);
     const response = { content: '商城操作失败，请稍后再试。', ephemeral: true };
