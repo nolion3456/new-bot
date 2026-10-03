@@ -21,7 +21,7 @@ const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
 const { transferCommand, setupTransfers } = require('./transfer');
 const { exchangeCommand, setupExchange } = require('./exchange');
-const { shopCommand, setupShop } = require('./shop');
+const { shopCommand, ticketCommand, setupShop } = require('./shop');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -73,6 +73,7 @@ const commands = [
   transferCommand,
   exchangeCommand,
   shopCommand,
+  ticketCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
