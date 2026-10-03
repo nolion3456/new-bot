@@ -240,6 +240,22 @@ function ticketEmbed(ticket) {
     ...(ticket.couponCode ? [{ name: '优惠券', value: `${ticket.couponCode}（-${formatMoney(ticket.discount || 0)}）`, inline: true }] : []),
   ).setFooter({ text: `工单创建时间：${new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` });
 }
+function reviewPanelEmbed(ticket) {
+  return new EmbedBuilder().setColor(0xf1c40f).setTitle('⭐ 订单评价').setDescription('订单已经完成，感谢你的购买！请点击下方按钮填写评价。只有开单成员可以提交。').addFields(
+    { name: '商品', value: ticket.productName, inline: true },
+    { name: '购买成员', value: `<@${ticket.buyerId}>`, inline: true },
+  );
+}
+function reviewPanelComponents() {
+  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:review').setLabel('填写评价').setEmoji('⭐').setStyle(ButtonStyle.Primary))];
+}
+function reviewResultEmbed(ticket) {
+  return new EmbedBuilder().setColor(0xf1c40f).setTitle('⭐ 订单评价').addFields(
+    { name: '商品', value: ticket.productName, inline: true },
+    { name: '评分', value: `${'⭐'.repeat(ticket.review.rating)}（${ticket.review.rating}/5）`, inline: true },
+    { name: '评价内容', value: ticket.review.comment || '成员未填写文字评价', inline: false },
+  ).setTimestamp(ticket.review.createdAt);
+}
 function ticketComponents(ticket) {
   const status = ticketStatus(ticket);
   if (status === 'closed') return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:reopen').setLabel('重新开单').setEmoji('🔓').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:ticket:record').setLabel('生成记录').setEmoji('🧾').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('shop:ticket:delete').setLabel('直接关单').setEmoji('🗑️').setStyle(ButtonStyle.Danger))];
@@ -366,7 +382,7 @@ async function handleShop(interaction) {
     if (status === 'cancelled') return interaction.reply({ content: '管理员取消订单时请选择是否退款：', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket-admin:cancel:refund').setLabel('取消并退款').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:ticket-admin:cancel:norefund').setLabel('取消但不退款').setStyle(ButtonStyle.Danger))], ephemeral: true });
     ticket.status = status; ticket.closed = status === 'closed'; ticket.closedAt = status === 'closed' ? Date.now() : null; ticket.claimedBy = status === 'processing' ? (ticket.claimedBy || interaction.user.id) : ticket.claimedBy;
     saveTickets(); await refreshTicketPanel(ticket, interaction.guild);
-    if (status === 'completed') await interaction.channel.send({ content: `<@${ticket.buyerId}> 订单已完成，请填写评价。`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:review').setLabel('填写评价').setEmoji('⭐').setStyle(ButtonStyle.Primary))] });
+    if (status === 'completed') await interaction.channel.send({ content: `<@${ticket.buyerId}>`, embeds: [reviewPanelEmbed(ticket)], components: reviewPanelComponents() });
     return interaction.update({ embeds: [ticketEmbed(ticket)], components: ticketAdminComponents(ticket) });
   }
   if (interaction.isUserSelectMenu?.() && interaction.customId === 'shop:ticket-admin:add-member') {
@@ -397,21 +413,20 @@ async function handleShop(interaction) {
     }
     if (action === 'close' && !parts[3]) {
       if (!manager) return interaction.reply({ content: '只有管理员可以关闭订单。', ephemeral: true });
-      await interaction.reply({ content: '⚠️ 确认要关闭这个订单吗？关闭后仍可通过 `/ticket` 重新开启。', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:close:confirm').setLabel('确认关闭').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('shop:ticket:close:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary))] });
-      return interaction.channel.send({ content: '🔒 管理员发起了关闭订单确认，请选择操作。', components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:close:confirm').setLabel('确认关闭订单').setEmoji('🔒').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('shop:ticket:close:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary))] });
+      await interaction.deferUpdate();
+      return interaction.channel.send({ embeds: [new EmbedBuilder().setColor(0xe67e22).setTitle('🔒 确认关闭订单').setDescription('管理员请求关闭此订单。确认后原本的订单面板不会改变，并会在频道中显示关闭后的新面板。')], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:close:confirm').setLabel('确认关闭订单').setEmoji('🔒').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('shop:ticket:close:cancel').setLabel('取消').setStyle(ButtonStyle.Secondary))] });
     }
     if (action === 'close' && parts[3] === 'confirm') {
       if (!manager) return interaction.reply({ content: '只有管理员可以确认关闭订单。', ephemeral: true });
       ticket.status = 'closed'; ticket.closed = true; ticket.closedAt = Date.now(); saveTickets();
-      await refreshTicketPanel(ticket, interaction.guild);
-      return interaction.update({ content: '订单已关闭。', components: [] });
+      return interaction.update({ content: '订单已关闭。原始订单面板保持不变；以下是新的关闭后操作面板。', embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
     }
     if (action === 'close' && parts[3] === 'cancel') return interaction.update({ content: '已取消关闭订单。', components: [] });
     if (action === 'complete') {
       if (!manager) return interaction.reply({ content: '只有管理员可以完成订单。', ephemeral: true });
       ticket.status = 'completed'; ticket.completedAt = Date.now(); saveTickets();
       await refreshTicketPanel(ticket, interaction.guild);
-      await interaction.channel.send({ content: `<@${ticket.buyerId}> 订单已完成，请填写本次购买评价。`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:review').setLabel('填写评价').setEmoji('⭐').setStyle(ButtonStyle.Primary))] });
+      await interaction.channel.send({ content: `<@${ticket.buyerId}>`, embeds: [reviewPanelEmbed(ticket)], components: reviewPanelComponents() });
       return interaction.reply({ content: '订单已标记为完成，并已发送公开评价面板。', ephemeral: true });
     }
     if (action === 'cancel') {
@@ -695,7 +710,7 @@ async function handleShop(interaction) {
     ticket.review = { rating, comment: interaction.fields.getTextInputValue('comment')?.trim() || '', createdAt: Date.now() }; saveTickets();
     await interaction.reply({ content: '评价已提交，谢谢你的反馈！', ephemeral: true });
     const reviewChannel = getShop(interaction.guildId).reviewChannelId ? await interaction.guild.channels.fetch(getShop(interaction.guildId).reviewChannelId).catch(() => null) : null;
-    return (reviewChannel?.isTextBased() ? reviewChannel : interaction.channel).send({ content: `⭐ 订单评价｜${ticket.productName}\n评分：${'⭐'.repeat(rating)}\n${ticket.review.comment || '成员未填写文字评价'}` });
+    return (reviewChannel?.isTextBased() ? reviewChannel : interaction.channel).send({ embeds: [reviewResultEmbed(ticket)] });
   }
   if (interaction.isModalSubmit() && interaction.customId.startsWith('shop:modal:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
