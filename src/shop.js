@@ -36,14 +36,24 @@ function defaultShop() {
   return { nextId: 1, products: [], ticketCategoryId: null, recordChannelId: null, reviewChannelId: null, coupons: [] };
 }
 function normalizeProduct(product, fallbackId) {
-  return {
+  const infoItems = Array.isArray(product.infoItems) ? product.infoItems.map((item, index) => ({
+    id: String(item.id || `${product.id || fallbackId}-info-${index + 1}`),
+    username: String(item.username || '').slice(0, 200),
+    password: String(item.password || '').slice(0, 200),
+    description: String(item.description || '').slice(0, 1000),
+  })).filter((item) => item.username || item.password || item.description) : [];
+  const normalized = {
     id: String(product.id || fallbackId),
     name: String(product.name || '未命名商品').slice(0, 80),
     description: String(product.description || '暂无商品说明').slice(0, 400),
     price: parseMoney(product.price) ?? 0,
     stock: Number.isInteger(Number(product.stock)) ? Number(product.stock) : 0,
     active: product.active !== false,
+    infoStorage: product.infoStorage === true,
+    infoItems,
   };
+  if (normalized.infoStorage) normalized.stock = infoItems.length;
+  return normalized;
 }
 function loadData() {
   try {
@@ -97,11 +107,11 @@ function productStatus(product) {
   if (!product.active) return '已下架';
   if (product.stock === -1) return '无限库存';
   if (product.stock <= 0) return '售罄';
-  return `库存 ${product.stock}`;
+  return `${product.infoStorage ? '资料库存' : '库存'} ${product.stock}`;
 }
 function adminEmbed(shop, selectedId = null) {
   const lines = shop.products.length
-    ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} 余额｜${productStatus(product)}${selectedId === product.id ? ' ← 当前选择' : ''}`)
+    ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} 余额｜${productStatus(product)}${product.infoStorage ? `｜已储存资料 ${product.infoItems.length} 条` : ''}${selectedId === product.id ? ' ← 当前选择' : ''}`)
     : ['目前还没有商品，请先点击“上架商品”。'];
   return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription('这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 `-1` 代表无限数量。\n\n' + lines.join('\n')).addFields(
     { name: '工单分类', value: shop.ticketCategoryId ? `<#${shop.ticketCategoryId}>` : '未设置（自动放在最上方）', inline: true },
@@ -132,6 +142,8 @@ function adminComponents(shop, selectedId = null) {
       new ButtonBuilder().setCustomId('shop:admin:edit').setLabel('修改商品').setEmoji('✏️').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('shop:admin:toggle').setLabel(selectedProduct(shop, selectedId).active ? '下架商品' : '重新上架').setEmoji(selectedProduct(shop, selectedId).active ? '📤' : '📥').setStyle(selectedProduct(shop, selectedId).active ? ButtonStyle.Danger : ButtonStyle.Success),
       new ButtonBuilder().setCustomId('shop:admin:delete').setLabel('删除商品').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('shop:admin:info-toggle').setLabel(selectedProduct(shop, selectedId).infoStorage ? '关闭资料发放' : '开启资料发放').setEmoji('🔐').setStyle(selectedProduct(shop, selectedId).infoStorage ? ButtonStyle.Danger : ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('shop:admin:info-add').setLabel('添加商品资料').setEmoji('➕').setStyle(ButtonStyle.Primary),
     ));
   }
   return rows;
@@ -143,6 +155,13 @@ function productModal(mode, product = {}) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('商品说明').setValue(product.description || '').setMaxLength(400).setStyle(TextInputStyle.Paragraph).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('价格（余额）').setPlaceholder('例如 10.50').setValue(product.price !== undefined ? String(product.price) : '').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('stock').setLabel('数量（-1 = 无限）').setPlaceholder('例如 10 或 -1').setValue(product.stock !== undefined ? String(product.stock) : '').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+}
+function infoItemModal(productId) {
+  return new ModalBuilder().setCustomId(`shop:info:add:${productId}`).setTitle('添加商品资料').addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('username').setLabel('Roblox 名称').setPlaceholder('请输入账号名称').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('password').setLabel('密码').setPlaceholder('请输入密码').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('资料描述（可选）').setPlaceholder('例如：等级、服务器、备注').setStyle(TextInputStyle.Paragraph).setRequired(false)),
   );
 }
 function publicEmbed() {
@@ -202,7 +221,7 @@ function currentCart(interaction) {
   for (const item of cart) {
     const product = selectedProduct(shop, item.productId);
     if (!product || !product.active) return { error: `${item.name} 已下架。` };
-    if (product.stock !== -1 && product.stock < item.quantity) return { error: `${product.name} 库存不足，目前只有 ${product.stock} 件。` };
+    if ((product.stock !== -1 && product.stock < item.quantity) || !hasInfoStock(product, item.quantity)) return { error: `${product.name} 的商品资料库存不足，目前只有 ${product.infoStorage ? product.infoItems.length : product.stock} 件。` };
     items.push({ productId: product.id, name: product.name, quantity: item.quantity, price: product.price, subtotal: Math.round(product.price * item.quantity * 100) / 100 });
   }
   return { items, total: Math.round(items.reduce((sum, item) => sum + item.subtotal, 0) * 100) / 100 };
@@ -219,6 +238,18 @@ function validCoupon(shop, code, userId) {
   if (coupon.maxUses > 0 && (coupon.usedBy || []).length >= coupon.maxUses) return { error: '优惠券已达到使用上限。' };
   if (coupon.perUser && (coupon.usedBy || []).includes(userId)) return { error: '你已经使用过这张优惠券。' };
   return { coupon };
+}
+function hasInfoStock(product, quantity) {
+  return !product.infoStorage || (product.stock !== -1 && product.infoItems.length >= quantity);
+}
+function takeRandomInfo(product, quantity) {
+  const selected = [];
+  for (let index = 0; index < quantity; index += 1) {
+    const itemIndex = Math.floor(Math.random() * product.infoItems.length);
+    selected.push(product.infoItems.splice(itemIndex, 1)[0]);
+  }
+  product.stock = product.infoItems.length;
+  return selected;
 }
 function safeChannelName(value) {
   return String(value || 'user').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 70) || 'user';
@@ -289,9 +320,54 @@ function ticketAdminComponents(ticket) {
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
-function ticketHtml(ticket) {
+function ticketHtml(ticket, transcript = []) {
   const items = ticket.items?.length ? ticket.items.map((item) => `<li>${escapeHtml(item.name)} × ${item.quantity}</li>`).join('') : `<li>${escapeHtml(ticket.productName)} × ${ticket.quantity}</li>`;
-  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:760px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd><ul>${items}</ul></dd><dt>商品总数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl>`;
+  const chat = transcript.length ? transcript.map((message) => `<article><b>${escapeHtml(message.author)}</b> <time>${escapeHtml(message.time)}</time><p>${escapeHtml(message.content || '（无文字内容）').replace(/\n/g, '<br>')}</p>${message.attachments.length ? `<p>附件：${message.attachments.map(escapeHtml).join('<br>')}</p>` : ''}</article>`).join('') : '<p>未读取到聊天记录。</p>';
+  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:860px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}article{border-top:1px solid #ddd;padding:12px 0}time{color:#777;font-size:12px}article p{white-space:normal;margin:6px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd><ul>${items}</ul></dd><dt>商品总数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl><h2>聊天记录</h2>${chat}`;
+}
+async function collectTranscript(channel) {
+  const messages = [];
+  let before;
+  for (let page = 0; page < 10; page += 1) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch?.size) break;
+    messages.push(...batch.values());
+    before = batch.last()?.id;
+    if (batch.size < 100) break;
+  }
+  return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp).map((message) => ({
+    author: message.author?.tag || message.author?.username || '未知成员',
+    time: new Date(message.createdTimestamp).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+    content: message.content || '',
+    attachments: [...message.attachments.values()].map((attachment) => attachment.url),
+  }));
+}
+async function sendTicketRecord(interaction, ticket) {
+  const sourceChannel = interaction.channel;
+  const transcript = sourceChannel?.messages ? await collectTranscript(sourceChannel) : [];
+  const buffer = Buffer.from(ticketHtml(ticket, transcript), 'utf8');
+  const fileName = `shop-ticket-${ticket.channelId}.html`;
+  const shop = getShop(interaction.guildId);
+  const recordChannel = shop.recordChannelId ? await interaction.guild.channels.fetch(shop.recordChannelId).catch(() => null) : null;
+  const sentChannel = Boolean(recordChannel?.isTextBased());
+  if (sentChannel) await recordChannel.send({ content: `🧾 商城购买记录｜${ticket.productName}｜${ticket.buyerName}（包含聊天记录）`, files: [{ attachment: buffer, name: fileName }] });
+  const buyer = await interaction.client.users.fetch(ticket.buyerId).catch(() => null);
+  const sentDm = Boolean(await buyer?.send({ content: '这是你的商城购买记录，包含工单聊天记录。', files: [{ attachment: buffer, name: fileName }] }).catch(() => null));
+  return { sentChannel, sentDm };
+}
+function infoPanelEmbed(ticket, info, index, total) {
+  return new EmbedBuilder().setColor(0x5865f2).setTitle(`🔐 商品资料 ${index}/${total}`).setDescription('这是你购买的商品资料，请妥善保存。').addFields(
+    { name: '商品', value: ticket.productName, inline: true },
+    { name: 'Roblox 名称', value: info.username || '未提供', inline: false },
+    { name: '密码', value: info.password || '未提供', inline: false },
+    { name: '描述', value: info.description || '无', inline: false },
+  ).setFooter({ text: '此资料仅发送到私密商城工单频道' });
+}
+async function deliverTicketInfo(ticket, channel) {
+  const deliveries = ticket.infoDeliveries || [];
+  for (let index = 0; index < deliveries.length; index += 1) {
+    await channel.send({ embeds: [infoPanelEmbed(ticket, deliveries[index], index + 1, deliveries.length)] }).catch(() => null);
+  }
 }
 async function createTicket(interaction, ticket) {
   const shop = getShop(interaction.guildId);
@@ -309,6 +385,7 @@ async function createTicket(interaction, ticket) {
   const panel = await channel.send({ content: `<@${ticket.buyerId}>`, embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
   ticket.panelMessageId = panel.id;
   saveTickets();
+  await deliverTicketInfo(ticket, channel);
   return channel;
 }
 async function refreshTicketPanel(ticket, guild) {
@@ -359,11 +436,9 @@ async function handleShop(interaction) {
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('perUser').setLabel('每人限用一次？yes/no').setValue('yes').setStyle(TextInputStyle.Short).setRequired(true)),
     ));
     if (action === 'record') {
-      const shop = getShop(interaction.guildId);
-      const channel = shop.recordChannelId ? await interaction.guild.channels.fetch(shop.recordChannelId).catch(() => null) : null;
-      if (!channel?.isTextBased()) return interaction.reply({ content: '请先在 `/shop` 设置记录频道。', ephemeral: true });
-      await channel.send({ content: `🧾 商城购买记录｜${ticket.productName}｜${ticket.buyerName}`, files: [{ attachment: Buffer.from(ticketHtml(ticket), 'utf8'), name: `shop-ticket-${ticket.channelId}.html` }] });
-      return interaction.reply({ content: `记录已生成并发送到 <#${channel.id}>。`, ephemeral: true });
+      const result = await sendTicketRecord(interaction, ticket);
+      if (!result.sentChannel && !result.sentDm) return interaction.reply({ content: '记录生成失败：请先设置有效的记录频道，并确认买家允许接收私讯。', ephemeral: true });
+      return interaction.reply({ content: `记录已生成${result.sentChannel ? '并发送到指定记录频道' : ''}${result.sentDm ? '，也已私讯给开单者' : '，但无法私讯开单者'}。`, ephemeral: true });
     }
     if (action === 'cancel' && parts[3]) {
       ticket.status = 'cancelled'; ticket.cancelledAt = Date.now();
@@ -458,11 +533,9 @@ async function handleShop(interaction) {
       return interaction.update({ embeds: [ticketEmbed(ticket)], components: ticketComponents(ticket) });
     }
     if (action === 'record') {
-      const shop = getShop(interaction.guildId);
-      const channel = shop.recordChannelId ? await interaction.guild.channels.fetch(shop.recordChannelId).catch(() => null) : null;
-      if (!channel?.isTextBased()) return interaction.reply({ content: '还没有设置记录发送频道，请管理员在 `/shop` 私密面板中设置。', ephemeral: true });
-      await channel.send({ content: `🧾 商城购买记录｜${ticket.productName}｜${ticket.buyerName}`, files: [{ attachment: Buffer.from(ticketHtml(ticket), 'utf8'), name: `shop-ticket-${ticket.channelId}.html` }] });
-      return interaction.reply({ content: `记录已生成并发送到 <#${channel.id}>，HTML 文件可以直接用浏览器打开或下载。`, ephemeral: true });
+      const result = await sendTicketRecord(interaction, ticket);
+      if (!result.sentChannel && !result.sentDm) return interaction.reply({ content: '记录生成失败：请先设置有效的记录频道，并确认买家允许接收私讯。', ephemeral: true });
+      return interaction.reply({ content: `记录已生成${result.sentChannel ? '并发送到指定记录频道' : ''}${result.sentDm ? '，也已私讯给开单者' : '，但无法私讯开单者'}。HTML 文件包含工单聊天记录。`, ephemeral: true });
     }
     if (action === 'delete') {
       tickets.delete(interaction.channelId);
@@ -552,15 +625,17 @@ async function handleShop(interaction) {
     const shop = getShop(interaction.guildId);
     for (const item of summary.items) {
       const current = selectedProduct(shop, item.productId);
-      if (!current || !current.active || (current.stock !== -1 && current.stock < item.quantity)) return interaction.update({ content: `结算失败：${item.name} 的库存刚刚发生变化，请重新检查购物车。`, embeds: [], components: [] });
+      if (!current || !current.active || (current.stock !== -1 && current.stock < item.quantity) || !hasInfoStock(current, item.quantity)) return interaction.update({ content: `结算失败：${item.name} 的库存或商品资料刚刚发生变化，请重新检查购物车。`, embeds: [], components: [] });
     }
     changeMajorBalance(interaction.guildId, interaction.user.id, -summary.total, { reason: `商城购物车结算：${summary.items.length} 种商品`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    const infoDeliveries = [];
     for (const item of summary.items) {
       const current = selectedProduct(shop, item.productId);
       if (current.stock !== -1) current.stock -= item.quantity;
+      if (current.infoStorage) infoDeliveries.push(...takeRandomInfo(current, item.quantity));
     }
     saveData();
-    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: `${summary.items.length} 种商品`, quantity: summary.items.reduce((sum, item) => sum + item.quantity, 0), total: summary.total, baseTotal: summary.total, items: summary.items, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: `${summary.items.length} 种商品`, quantity: summary.items.reduce((sum, item) => sum + item.quantity, 0), total: summary.total, baseTotal: summary.total, items: summary.items, infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
     carts.set(cartKey(interaction), []);
     await interaction.deferUpdate();
     const ticketChannel = await createTicket(interaction, ticket).catch((error) => { console.error('Failed to create shop cart ticket:', error.message); return null; });
@@ -593,12 +668,13 @@ async function handleShop(interaction) {
     const shop = getShop(interaction.guildId);
     const current = selectedProduct(shop, product.id);
     if (!current || !current.active || (current.stock !== -1 && current.stock <= 0)) return interaction.update({ content: '购买失败：商品库存刚刚发生变化。', embeds: [], components: [] });
-    if (current.stock !== -1 && quantity > current.stock) return interaction.update({ content: '购买失败：商品库存刚刚发生变化。', embeds: [], components: [] });
+    if ((current.stock !== -1 && quantity > current.stock) || !hasInfoStock(current, quantity)) return interaction.update({ content: '购买失败：商品库存或商品资料刚刚发生变化。', embeds: [], components: [] });
     changeMajorBalance(interaction.guildId, interaction.user.id, -total, { reason: `商城购买：${current.name} × ${quantity}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     if (current.stock !== -1) current.stock -= quantity;
+    const infoDeliveries = current.infoStorage ? takeRandomInfo(current, quantity) : [];
     saveData();
     await interaction.deferUpdate();
-    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: current.name, quantity, total, baseTotal: total, items: [{ productId: current.id, name: current.name, quantity, price: current.price, subtotal: total }], createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: current.name, quantity, total, baseTotal: total, items: [{ productId: current.id, name: current.name, quantity, price: current.price, subtotal: total }], infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
     const ticketChannel = await createTicket(interaction, ticket).catch((error) => {
       console.error('Failed to create shop ticket:', error.message);
       return null;
@@ -630,6 +706,16 @@ async function handleShop(interaction) {
     }
     const product = selectedProduct(session.shop, session.selectedId);
     if (!product) return interaction.reply({ content: '请先从下拉菜单选择商品。', ephemeral: true });
+    if (action === 'info-toggle') {
+      if (!product.infoStorage && product.stock === -1) return interaction.reply({ content: '启用商品资料发放后必须使用有限库存，不能设置为无限数量。请先把库存改为有限数量。', ephemeral: true });
+      product.infoStorage = !product.infoStorage;
+      if (product.infoStorage) product.stock = product.infoItems.length;
+      return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
+    }
+    if (action === 'info-add') {
+      if (!product.infoStorage) return interaction.reply({ content: '请先开启“资料发放”，并确保商品使用有限库存。', ephemeral: true });
+      return interaction.showModal(infoItemModal(product.id));
+    }
     if (action === 'edit') return interaction.showModal(productModal('edit', product));
     if (action === 'toggle') { product.active = !product.active; return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) }); }
     if (action === 'delete') { session.shop.products = session.shop.products.filter((item) => item.id !== product.id); session.selectedId = null; return interaction.update({ embeds: [adminEmbed(session.shop)], components: adminComponents(session.shop) }); }
@@ -654,6 +740,23 @@ async function handleShop(interaction) {
     shop.coupons.push({ code, type, value, maxUses, perUser, active: true, usedBy: [], createdBy: interaction.user.id });
     saveData();
     return interaction.reply({ content: `优惠券 **${code}** 已创建。类型：${type}，数值：${value}，总次数：${maxUses || '不限'}，每人限用一次：${perUser ? '是' : '否'}。`, ephemeral: true });
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('shop:info:add:')) {
+    if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以添加商品资料。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    if (!session) return interaction.reply({ content: '商城管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
+    const product = selectedProduct(session.shop, interaction.customId.split(':')[3]);
+    if (!product || !product.infoStorage || product.stock === -1) return interaction.reply({ content: '这个商品没有开启有限数量的资料发放。', ephemeral: true });
+    const item = {
+      id: `${product.id}-info-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      username: interaction.fields.getTextInputValue('username').trim(),
+      password: interaction.fields.getTextInputValue('password').trim(),
+      description: interaction.fields.getTextInputValue('description')?.trim() || '',
+    };
+    if (!item.username || !item.password) return interaction.reply({ content: 'Roblox 名称和密码不能为空。', ephemeral: true });
+    product.infoItems.push(item);
+    product.stock = product.infoItems.length;
+    return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
   }
   if (interaction.isModalSubmit() && interaction.customId === 'shop:ticket:edit-modal') {
     const ticket = tickets.get(interaction.channelId);
@@ -730,7 +833,9 @@ async function handleShop(interaction) {
     } else {
       const product = selectedProduct(session.shop, parts[3]);
       if (!product) return interaction.reply({ content: '商品不存在，请重新打开 `/shop`。', ephemeral: true });
+      if (product.infoStorage && stock === -1) return interaction.reply({ content: '已开启资料发放的商品不能设置无限库存。', ephemeral: true });
       Object.assign(product, { name, description, price, stock }); session.selectedId = product.id;
+      if (product.infoStorage) product.stock = product.infoItems.length;
     }
     return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
   }
