@@ -850,4 +850,4 @@ function setupShop(client) {
     if (interaction.replied || interaction.deferred) interaction.followUp(response).catch(() => null); else interaction.reply(response).catch(() => null);
   }));
 }
-module.exports = { shopCommand, setupShop };
+module.exports = { shopCommand, ticketCommand, setupShop };
