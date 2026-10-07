@@ -117,6 +117,13 @@ cp .env.example .env
 npm start
 ```
 
+## Bot Hosting 启动设置
+
+- 运行环境选择 **Node.js**，建议使用 Node.js 18.18 或更高版本。
+- 启动命令可以填写 `bash start.sh`，也可以填写 `npm start`。
+- 必须设置环境变量 `DISCORD_TOKEN`；可选设置 `DISCORD_GUILD_ID` 和 `PORT`。
+- `start.sh` 会在缺少 Token 时直接给出明确错误，并使用 `exec` 启动 Node 进程，避免 Bot Hosting 只监控到 shell 进程而误判机器人已停止。
+
 ## 环境变量
 
 - `DISCORD_TOKEN`：Discord Bot Token，必填。

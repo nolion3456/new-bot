@@ -25,7 +25,8 @@ const { shopCommand, ticketCommand, setupShop } = require('./shop');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
-const port = Number(process.env.PORT || 3000);
+const parsedPort = Number(process.env.PORT);
+const port = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 3000;
 const maxAuditChannels = 3;
 const configMarker = 'new-bot-audit-config-v4';
 const previousConfigMarker = 'new-bot-audit-config-v3';
@@ -320,12 +321,11 @@ setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency,
   const user = await client.users.fetch(userId).catch(() => null);
   const actor = actorId ? await client.users.fetch(actorId).catch(() => null) : null;
   const embed = new EmbedBuilder()
-    .setColor(amount >= 0 ? 0x57f287 : 0xed4245)
-    .setTitle('余额变化')
-    .addFields(
-      { name: '成员', value: user ? `${user.tag} (<@${userId}>)` : `<@${userId}>`, inline: false },
-      { name: '变化类型', value: amount >= 0 ? '增加' : '减少', inline: true },
-      { name: '变化数量', value: `${formatMoney(Math.abs(amount))} ${currency}`, inline: true },
+      .setColor(amount >= 0 ? 0x57f287 : 0xed4245)
+      .setTitle('余额变化')
+      .addFields(
+        { name: '成员', value: user ? `${user.tag} (<@${userId}>)` : `<@${userId}>`, inline: false },
+        { name: '变化数量', value: `${amount >= 0 ? '+' : '-'}${formatMoney(Math.abs(amount))} ${currency}`, inline: true },
       { name: '变化前余额', value: `${formatMoney(before)} ${currency}`, inline: true },
       { name: '变化后余额', value: `${formatMoney(after)} ${currency}`, inline: true },
       { name: '变化原因', value: reason || '余额调整', inline: false },
@@ -689,4 +689,7 @@ setupGambling(client);
 setupTransfers(client);
 setupExchange(client);
 setupShop(client);
-client.login(token);
+client.login(token).catch((error) => {
+  console.error('Discord login failed:', error?.message || error);
+  process.exitCode = 1;
+});
