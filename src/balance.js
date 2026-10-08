@@ -11,6 +11,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
+const { canManageGuild } = require('./permissions');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'balances.json');
@@ -131,7 +132,14 @@ function panelComponents() {
   )];
 }
 
-function amountModal(action, targetId, messageId = '') {
+function currencyChoiceComponents(action, targetId, messageId = '') {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`balance:choose:${action}:mini:${targetId}:${messageId}`).setLabel('迷你币').setEmoji('🪙').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`balance:choose:${action}:major:${targetId}:${messageId}`).setLabel('余额').setEmoji('💰').setStyle(ButtonStyle.Success),
+  )];
+}
+
+function amountModal(action, currency, targetId, messageId = '') {
   const data = new TextInputBuilder()
     .setCustomId('balance:amount')
     .setLabel('数量')
@@ -141,13 +149,13 @@ function amountModal(action, targetId, messageId = '') {
     .setMinLength(1)
     .setMaxLength(12);
   return new ModalBuilder()
-    .setCustomId(`balance:modal:${action}:${targetId}:${messageId}`)
-    .setTitle(action === 'add' ? '加币' : '减币')
+    .setCustomId(`balance:modal:${action}:${currency}:${targetId}:${messageId}`)
+    .setTitle(`${action === 'add' ? '加' : '减'}${currency === 'major' ? '余额' : '迷你币'}`)
     .addComponents(new ActionRowBuilder().addComponents(data));
 }
 
 function isManager(interaction) {
-  return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return canManageGuild(interaction);
 }
 
 async function handleBalanceInteraction(interaction) {
@@ -168,22 +176,29 @@ async function handleBalanceInteraction(interaction) {
 
   if (interaction.isButton() && interaction.customId.startsWith('balance:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以加币或减币。', ephemeral: true });
-    const action = interaction.customId.split(':')[1];
-    const targetId = interaction.message?.embeds?.[0]?.description?.match(/<@!?([0-9]+)>/)?.[1] || interaction.user.id;
-    return interaction.showModal(amountModal(action, targetId, interaction.message?.id));
+    const parts = interaction.customId.split(':');
+    const action = parts[1];
+    if (action === 'add' || action === 'remove') {
+      const targetId = interaction.message?.embeds?.[0]?.description?.match(/<@!?([0-9]+)>/)?.[1] || interaction.user.id;
+      return interaction.reply({ content: `请选择要${action === 'add' ? '增加' : '减少'}的币种：`, components: currencyChoiceComponents(action, targetId, interaction.message?.id), ephemeral: true });
+    }
+    if (action !== 'choose' || !['add', 'remove'].includes(parts[2]) || !['mini', 'major'].includes(parts[3])) return interaction.reply({ content: '余额操作类型无效，请重新打开余额面板。', ephemeral: true });
+    return interaction.showModal(amountModal(parts[2], parts[3], parts[4], parts[5] || ''));
   }
 
   if (interaction.isModalSubmit() && interaction.customId.startsWith('balance:modal:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以操作余额。', ephemeral: true });
-    const [, , action, targetIdFromModal, messageIdFromModal] = interaction.customId.split(':');
+    const [, , action, currency, targetIdFromModal, messageIdFromModal] = interaction.customId.split(':');
     const amount = parseMoney(interaction.fields.getTextInputValue('balance:amount'));
     if (amount === null || amount === 0) return interaction.reply({ content: '请输入非 0 金额，最多支持两位小数，例如 `100`、`10.25` 或 `-5.5`。', ephemeral: true });
     const targetId = targetIdFromModal || interaction.user.id;
     const data = getGuildData(interaction.guildId);
-    const signedAmount = action === 'add' ? amount : -amount;
+    const signedAmount = action === 'add' ? Math.abs(amount) : -Math.abs(amount);
     const actionLabel = action === 'add' ? '增加' : '减少';
-    const { before, after } = changeBalance(interaction.guildId, targetId, signedAmount, {
-      reason: `管理员手动${actionLabel}余额`,
+    const currencyName = currency === 'major' ? '余额' : data.name;
+    const change = currency === 'major' ? changeMajorBalance : changeBalance;
+    const { before, after } = change(interaction.guildId, targetId, signedAmount, {
+      reason: `管理员手动${actionLabel}${currencyName}`,
       actorId: interaction.user.id,
       actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
     });
@@ -194,9 +209,8 @@ async function handleBalanceInteraction(interaction) {
       .setTitle(`💰 ${data.name}余额变更`)
       .addFields(
         { name: '被调整成员', value: targetLabel, inline: false },
-        { name: '变更类型', value: actionLabel, inline: true },
-        { name: '变更数量', value: `${formatMoney(amount)} ${data.name}`, inline: true },
-        { name: '变更后余额', value: `${formatMoney(after)} ${data.name}`, inline: false },
+        { name: '变更数量', value: `${signedAmount >= 0 ? '+' : '-'}${formatMoney(Math.abs(signedAmount))} ${currencyName}`, inline: true },
+        { name: '变更后余额', value: `${formatMoney(after)} ${currencyName}`, inline: false },
         { name: '操作者', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
       )
       .setTimestamp();

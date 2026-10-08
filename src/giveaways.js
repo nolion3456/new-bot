@@ -204,7 +204,7 @@ async function rerollGiveaway(client, giveaway) {
 }
 
 function isManager(interaction) {
-  return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return require('./permissions').canManageGuild(interaction);
 }
 
 function draftKey(interaction) {

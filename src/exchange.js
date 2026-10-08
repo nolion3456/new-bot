@@ -38,7 +38,7 @@ function getConfig(guildId) {
   return configs.get(guildId);
 }
 function isManager(interaction) {
-  return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return require('./permissions').canManageGuild(interaction);
 }
 function sessionKey(interaction) { return `${interaction.guildId}:${interaction.user.id}`; }
 function ratioText(rule, miniName) { return `${formatMoney(rule.source)} ${rule === undefined ? '' : ''}${rule.source === 1 ? '余额' : miniName} = ${formatMoney(rule.target)} ${rule.target === 1 ? '余额' : miniName}`; }

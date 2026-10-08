@@ -16,6 +16,7 @@ const {
   TextInputStyle,
   UserSelectMenuBuilder,
 } = require('discord.js');
+const { canManageGuild } = require('./permissions');
 const { changeMajorBalance, getMajorBalance, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
@@ -99,7 +100,7 @@ function getShop(guildId) {
   return shops.get(guildId);
 }
 function isManager(interaction) {
-  return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return canManageGuild(interaction);
 }
 function key(interaction) { return `${interaction.guildId}:${interaction.user.id}`; }
 function selectedProduct(shop, id) { return shop.products.find((product) => product.id === String(id)); }

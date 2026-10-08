@@ -22,6 +22,7 @@ const { gambleCommand, setupGambling } = require('./gambling');
 const { transferCommand, setupTransfers } = require('./transfer');
 const { exchangeCommand, setupExchange } = require('./exchange');
 const { shopCommand, ticketCommand, setupShop } = require('./shop');
+const { canManageGuild } = require('./permissions');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -372,7 +373,7 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isButton() || interaction.isChannelSelectMenu() || interaction.isStringSelectMenu()) {
       if (!interaction.inGuild()) return interaction.reply({ content: '此面板只能在服务器内使用。', ephemeral: true });
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      if (!canManageGuild(interaction)) {
         return interaction.reply({ content: '你需要“管理服务器”权限才能操作这个后台面板。', ephemeral: true });
       }
 
@@ -483,7 +484,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'audit-channel') {
       if (!interaction.inGuild()) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+      if (!canManageGuild(interaction)) {
         return interaction.reply({ content: '你需要“管理服务器”权限才能打开这个后台面板。', ephemeral: true });
       }
 

@@ -49,7 +49,7 @@ function getConfig(guildId) {
 }
 
 function isManager(interaction) {
-  return interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return require('./permissions').canManageGuild(interaction);
 }
 
 function settingKey(interaction) {
