@@ -76,7 +76,7 @@ function createModal() {
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('item').setLabel('拍卖物品').setPlaceholder('例如：稀有头衔').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('start').setLabel('起始价格').setPlaceholder('例如：100').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('increment').setLabel('每次最低加价').setPlaceholder('例如：10').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('duration').setLabel('拍卖时长（分钟，留空手动结束）').setPlaceholder('例如：60').setStyle(TextInputStyle.Short).setRequired(false)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('duration').setLabel('拍卖时长（m/h/d，留空手动结束）').setPlaceholder('例如：30m、2h 或 1d').setStyle(TextInputStyle.Short).setRequired(false)),
     );
 }
 
@@ -84,14 +84,24 @@ function isManager(interaction) {
   return require('./permissions').canManageGuild(interaction);
 }
 
+function parseDuration(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return null;
+  const match = text.match(/^(\d+)\s*(m|h|d)$/);
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  const multiplier = { m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+  const milliseconds = amount * multiplier;
+  return Number.isSafeInteger(milliseconds) && milliseconds >= 60_000 && milliseconds <= 365 * 86_400_000 ? milliseconds : undefined;
+}
+
 async function publishAuction(interaction, values) {
   if (auctions.has(interaction.guildId)) return interaction.reply({ content: '本服务器已经有一场进行中的拍卖，请先结束它。', ephemeral: true });
   const start = parseMoney(values.start);
   const increment = parseMoney(values.increment);
-  const durationText = values.duration.trim();
-  const durationMinutes = durationText ? Number(durationText) : 0;
-  if (start === null || start < 0 || increment === null || increment <= 0 || (durationText && (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 43_200))) {
-    return interaction.reply({ content: '起始价格必须是非负金额，最低加价必须大于 0；时长必须是 1 到 43200 分钟的整数或留空。', ephemeral: true });
+  const durationMs = parseDuration(values.duration);
+  if (start === null || start < 0 || increment === null || increment <= 0 || durationMs === undefined) {
+    return interaction.reply({ content: '起始价格必须是非负金额，最低加价必须大于 0；时长请使用 `30m`、`2h` 或 `1d`，范围为 1 分钟至 365 天，也可以留空手动结束。', ephemeral: true });
   }
   const auction = {
     id: `${Date.now()}-${interaction.user.id}`,
@@ -103,7 +113,7 @@ async function publishAuction(interaction, values) {
     minIncrement: increment,
     highestBid: null,
     bidCount: 0,
-    endAt: durationMinutes ? Date.now() + durationMinutes * 60_000 : null,
+    endAt: durationMs ? Date.now() + durationMs : null,
     status: 'active',
   };
   const message = await interaction.channel.send({ embeds: [auctionEmbed(auction, getGuildData(interaction.guildId).name)], components: auctionComponents() }).catch(() => null);

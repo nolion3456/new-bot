@@ -11,7 +11,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
-const { changeBalance, getGuildData, roundMoney, formatMoney, parseMoney } = require('./balance');
+const { changeBalance, getBalance, getGuildData, roundMoney, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'checkins.json');
@@ -63,7 +63,10 @@ function dayNumber(dayKey) {
 }
 
 function weekKey(dayKey) {
-  return String(Math.floor(dayNumber(dayKey) / 7));
+  const date = new Date(`${dayKey}T00:00:00.000Z`);
+  const daysFromMonday = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - daysFromMonday);
+  return date.toISOString().slice(0, 10);
 }
 
 function randomReward(minimum, maximum) {
@@ -139,12 +142,32 @@ function publicPanelComponents() {
   return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('checkin:claim').setLabel('签到').setEmoji('📅').setStyle(ButtonStyle.Primary))];
 }
 
+function currentCheckinEmbed(guildId, userId, record, today, config) {
+  const currentWeek = weekKey(today);
+  const weekDays = record.week === currentWeek ? [...new Set(record.weekDays || [])] : [];
+  const currency = getGuildData(guildId).name;
+  return new EmbedBuilder()
+    .setColor(0xf1c40f)
+    .setTitle('📅 今日已经签到')
+    .setDescription(`<@${userId}> 今天已经领取过奖励，这次不会重复发放。`)
+    .addFields(
+      { name: '连续签到', value: `${record.streak || 0} 天`, inline: true },
+      { name: '本周签到天数', value: `${weekDays.length}/${config.weeklyDays}`, inline: true },
+      { name: '当前余额', value: `${formatMoney(getBalance(guildId, userId))} ${currency}`, inline: true },
+      { name: '今日签到日期', value: today, inline: true },
+      { name: '本周签到日期', value: weekDays.length ? weekDays.join('、') : '暂无', inline: false },
+      { name: '每周奖励状态', value: record.weekRewardClaimed ? '本周奖励已领取' : `签到满 ${config.weeklyDays} 天可获得 +${formatMoney(config.weeklyBonus)} ${currency}`, inline: false },
+    )
+    .setFooter({ text: '每周从星期一 00:00 开始，星期日 23:59 结束（UTC+8）' })
+    .setTimestamp();
+}
+
 async function claimCheckin(interaction) {
   const config = getConfig(interaction.guildId);
   const userId = interaction.user.id;
   const today = localDayKey();
   const record = config.users[userId] || { lastDay: null, streak: 0, week: null, weekDays: [] };
-  if (record.lastDay === today) return interaction.reply({ content: `你今天已经签到过了。当前连续签到：${record.streak} 天。`, ephemeral: true });
+  if (record.lastDay === today) return interaction.reply({ embeds: [currentCheckinEmbed(interaction.guildId, userId, record, today, config)], ephemeral: true });
   const previousDay = localDayKey(new Date(Date.now() - DAY_MS));
   const streak = record.lastDay === previousDay ? Number(record.streak || 0) + 1 : 1;
   const currentWeek = weekKey(today);
@@ -173,7 +196,7 @@ async function claimCheckin(interaction) {
       { name: '本周签到天数', value: `${weekDays.length}/${config.weeklyDays}`, inline: true },
       { name: '当前余额', value: `${formatMoney(balanceResult.after)} ${currency}`, inline: true },
     )
-    .setFooter({ text: '签到时间按照 UTC+8，每天 00:00 后可再次签到' })
+    .setFooter({ text: '签到时间按照 UTC+8；每周从星期一 00:00 开始，星期日 23:59 结束' })
     .setTimestamp();
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }
