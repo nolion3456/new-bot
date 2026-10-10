@@ -99,6 +99,27 @@ function getShop(guildId) {
   if (!shops.has(guildId)) shops.set(guildId, defaultShop());
   return shops.get(guildId);
 }
+async function sanitizeShopSettings(guild, shop) {
+  let changed = false;
+  const checks = [
+    ['ticketCategoryId', (channel) => channel?.type === ChannelType.GuildCategory],
+    ['recordChannelId', (channel) => channel?.isTextBased?.() && [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)],
+    ['reviewChannelId', (channel) => channel?.isTextBased?.() && [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)],
+  ];
+  for (const [field, isValid] of checks) {
+    if (!shop[field]) continue;
+    const channel = await guild.channels.fetch(shop[field]).catch(() => null);
+    if (!isValid(channel)) {
+      shop[field] = null;
+      changed = true;
+    }
+  }
+  if (!Array.isArray(shop.products)) { shop.products = []; changed = true; }
+  if (!Array.isArray(shop.coupons)) { shop.coupons = []; changed = true; }
+  if (!Number.isInteger(Number(shop.nextId)) || Number(shop.nextId) < 1) { shop.nextId = 1; changed = true; }
+  if (changed) saveData();
+  return shop;
+}
 function isManager(interaction) {
   return canManageGuild(interaction);
 }
@@ -413,7 +434,7 @@ function restoreTicketStock(ticket) {
 async function handleShop(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'shop') {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
-    const shop = JSON.parse(JSON.stringify(getShop(interaction.guildId)));
+    const shop = JSON.parse(JSON.stringify(await sanitizeShopSettings(interaction.guild, getShop(interaction.guildId))));
     sessions.set(key(interaction), { shop, selectedId: null });
     return interaction.reply({ embeds: [adminEmbed(shop)], components: adminComponents(shop), ephemeral: true });
   }
