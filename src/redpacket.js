@@ -104,7 +104,7 @@ function packetEmbed(packet, currency) {
     )
     .setFooter({ text: `福袋 ID：${packet.id}` })
     .setTimestamp(new Date(packet.createdAt));
-  if (!active && packet.highestUserId && packet.mode === 'lucky') embed.addFields({ name: '手气最佳', value: `<@${packet.highestUserId}>（${formatMoney(packet.highestCents / 100)} ${currency}）`, inline: false });
+  if (packet.highestUserId && packet.mode === 'lucky') embed.addFields({ name: '当前手气最佳', value: `<@${packet.highestUserId}>（抢到 ${formatMoney(packet.highestCents / 100)} ${currency}）`, inline: false });
   return embed;
 }
 
