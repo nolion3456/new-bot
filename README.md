@@ -134,13 +134,13 @@ npm start
 
 - 运行环境选择 **Node.js**，建议使用 Node.js 18.18 或更高版本。
 - 启动命令可以填写 `bash start.sh`，也可以填写 `npm start`。
-- 必须设置环境变量 `DISCORD_TOKEN`；可选设置 `DISCORD_GUILD_ID` 和 `PORT`。
+- 必须设置环境变量 `DISCORD_TOKEN`；可选设置 `PORT`。
 - `start.sh` 会在缺少 Token 时直接给出明确错误，并使用 `exec` 启动 Node 进程，避免 Bot Hosting 只监控到 shell 进程而误判机器人已停止。
 
 ## 环境变量
 
 - `DISCORD_TOKEN`：Discord Bot Token，必填。
-- `DISCORD_GUILD_ID`：可选。填写后会立即向指定服务器注册指令；不填写则注册为全局指令。
+- Slash 指令会自动注册为全局指令，机器人加入的所有服务器都可以使用，不需要设置服务器 ID。首次注册或更新全局指令可能需要 Discord 一段时间同步。
 - `PORT`：可选，默认 `3000`。
 
 审计配置与抽奖数据会写入本地 JSON 文件。请确认部署平台的文件系统会保留运行时文件；如果平台使用临时文件系统，重启或重新部署后需要改用持久化磁盘或数据库。

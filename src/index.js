@@ -24,9 +24,7 @@ const { exchangeCommand, setupExchange } = require('./exchange');
 const { shopCommand, ticketCommand, setupShop } = require('./shop');
 const { canManageGuild } = require('./permissions');
 const { redPacketCommand, setupRedPackets, setRedPacketAuditSender } = require('./redpacket');
-
 const token = process.env.DISCORD_TOKEN;
-const guildId = process.env.DISCORD_GUILD_ID;
 const parsedPort = Number(process.env.PORT);
 const port = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 3000;
 const maxAuditChannels = 3;
@@ -271,22 +269,18 @@ async function registerCommands() {
   const commandNames = new Set(commands.map((command) => command.name));
   const globalRoute = Routes.applicationCommands(client.user.id);
   const globalCommands = await rest.get(globalRoute);
-  if (guildId) {
-    for (const command of globalCommands) {
-      if (commandNames.has(command.name)) await rest.delete(`${globalRoute}/${command.id}`);
-    }
-  } else {
-    for (const guild of client.guilds.cache.values()) {
-      const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
-      const guildCommands = await rest.get(guildRoute);
-      for (const command of guildCommands) {
-        if (commandNames.has(command.name)) await rest.delete(`${guildRoute}/${command.id}`);
-      }
+  for (const command of globalCommands) {
+    if (commandNames.has(command.name)) await rest.delete(`${globalRoute}/${command.id}`);
+  }
+  for (const guild of client.guilds.cache.values()) {
+    const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
+    const guildCommands = await rest.get(guildRoute);
+    for (const command of guildCommands) {
+      if (commandNames.has(command.name)) await rest.delete(`${guildRoute}/${command.id}`);
     }
   }
-  const route = guildId ? Routes.applicationGuildCommands(client.user.id, guildId) : globalRoute;
-  await rest.put(route, { body: commands });
-  console.log(`Registered ${commands.length} slash commands ${guildId ? `for guild ${guildId} (old global copies removed)` : 'globally (old guild copies removed)'}.`);
+  await rest.put(globalRoute, { body: commands });
+  console.log(`Registered ${commands.length} slash commands globally for all servers (old guild copies removed).`);
 }
 
 async function sendAudit(guild, embed, eventType, eventKey = null, options = {}) {
