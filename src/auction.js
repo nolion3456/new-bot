@@ -23,12 +23,18 @@ const auctionCommand = new SlashCommandBuilder()
   .setDescription('管理迷你币拍卖（管理员）')
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
   .addSubcommand((subcommand) => subcommand.setName('create').setDescription('打开私密拍卖设置面板'))
-  .addSubcommand((subcommand) => subcommand.setName('end').setDescription('结束当前拍卖并结算'));
+  .addSubcommand((subcommand) => subcommand.setName('end').setDescription('结束拍卖并结算').addStringOption((option) => option.setName('id').setDescription('拍卖 ID（不填时使用当前频道唯一的拍卖）').setRequired(false)));
 
 function loadData() {
   try {
     const raw = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
-    for (const [guildId, auction] of Object.entries(raw)) auctions.set(guildId, auction);
+    for (const [key, value] of Object.entries(raw)) {
+      const records = value?.item ? [[value.id || `${value.guildId || key}-${value.messageId || Date.now()}`, { ...value, guildId: value.guildId || key }]] : Object.entries(value || {});
+      for (const [auctionId, auction] of records) {
+        if (!auction?.item || !auction.guildId) continue;
+        auctions.set(String(auction.id || auctionId), { ...auction, id: String(auction.id || auctionId) });
+      }
+    }
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Failed to load auction data:', error.message);
   }
@@ -41,9 +47,21 @@ function saveData() {
   fs.renameSync(temporary, dataFile);
 }
 
-function clearTimer(guildId) {
-  if (timers.has(guildId)) clearTimeout(timers.get(guildId));
-  timers.delete(guildId);
+function clearTimer(auctionId) {
+  if (timers.has(auctionId)) clearTimeout(timers.get(auctionId));
+  timers.delete(auctionId);
+}
+
+function guildAuctions(guildId, activeOnly = true) {
+  return [...auctions.values()].filter((auction) => auction.guildId === guildId && (!activeOnly || auction.status === 'active'));
+}
+
+function findAuction(guildId, auctionId, channelId = null, messageId = null) {
+  if (auctionId) {
+    const auction = auctions.get(String(auctionId));
+    return auction?.guildId === guildId ? auction : null;
+  }
+  return guildAuctions(guildId).find((auction) => (messageId && auction.messageId === messageId) || (channelId && auction.channelId === channelId)) || null;
 }
 
 function auctionEmbed(auction, currency) {
@@ -64,8 +82,8 @@ function auctionEmbed(auction, currency) {
     .setTimestamp();
 }
 
-function auctionComponents() {
-  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('auction:bid').setLabel('出价').setEmoji('💰').setStyle(ButtonStyle.Primary))];
+function auctionComponents(auction) {
+  return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`auction:bid:${auction.id}`).setLabel('出价').setEmoji('💰').setStyle(ButtonStyle.Primary))];
 }
 
 function createModal() {
@@ -96,15 +114,16 @@ function parseDuration(value) {
 }
 
 async function publishAuction(interaction, values) {
-  if (auctions.has(interaction.guildId)) return interaction.reply({ content: '本服务器已经有一场进行中的拍卖，请先结束它。', ephemeral: true });
   const start = parseMoney(values.start);
   const increment = parseMoney(values.increment);
   const durationMs = parseDuration(values.duration);
   if (start === null || start < 0 || increment === null || increment <= 0 || durationMs === undefined) {
     return interaction.reply({ content: '起始价格必须是非负金额，最低加价必须大于 0；时长请使用 `30m`、`2h` 或 `1d`，范围为 1 分钟至 365 天，也可以留空手动结束。', ephemeral: true });
   }
+  let auctionId = `${Date.now()}-${interaction.user.id}`;
+  while (auctions.has(auctionId)) auctionId = `${Date.now()}-${interaction.user.id}-${Math.random().toString(36).slice(2, 8)}`;
   const auction = {
-    id: `${Date.now()}-${interaction.user.id}`,
+    id: auctionId,
     guildId: interaction.guildId,
     channelId: interaction.channelId,
     messageId: null,
@@ -116,22 +135,22 @@ async function publishAuction(interaction, values) {
     endAt: durationMs ? Date.now() + durationMs : null,
     status: 'active',
   };
-  const message = await interaction.channel.send({ embeds: [auctionEmbed(auction, getGuildData(interaction.guildId).name)], components: auctionComponents() }).catch(() => null);
+  const message = await interaction.channel.send({ embeds: [auctionEmbed(auction, getGuildData(interaction.guildId).name)], components: auctionComponents(auction) }).catch(() => null);
   if (!message) return interaction.reply({ content: '发布拍卖失败，请检查机器人频道权限。', ephemeral: true });
   auction.messageId = message.id;
-  auctions.set(interaction.guildId, auction);
+  auctions.set(auction.id, auction);
   saveData();
   scheduleAuction(interaction.client, auction);
   return interaction.reply({ content: `拍卖已发布：${message.url}`, ephemeral: true });
 }
 
-async function finishAuction(client, guildId) {
-  const auction = auctions.get(guildId);
+async function finishAuction(client, auctionId) {
+  const auction = auctions.get(String(auctionId));
   if (!auction || auction.status !== 'active') return false;
-  clearTimer(guildId);
+  clearTimer(auction.id);
   auction.status = 'ended';
-  const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
-  const currency = getGuildData(guildId).name;
+  const guild = client.guilds.cache.get(auction.guildId) || await client.guilds.fetch(auction.guildId).catch(() => null);
+  const currency = getGuildData(auction.guildId).name;
   let result;
   if (auction.highestBid) {
     const winner = await client.users.fetch(auction.highestBid.userId).catch(() => null);
@@ -143,7 +162,7 @@ async function finishAuction(client, guildId) {
   } else {
     result = `拍卖结束\n\n物品：${auction.item}\n结果：没有人出价。`;
   }
-  auctions.delete(guildId);
+  auctions.delete(auction.id);
   saveData();
   if (guild) {
     const channel = await guild.channels.fetch(auction.channelId).catch(() => null);
@@ -157,10 +176,10 @@ async function finishAuction(client, guildId) {
 }
 
 function scheduleAuction(client, auction) {
-  clearTimer(auction.guildId);
+  clearTimer(auction.id);
   if (!auction.endAt) return;
   const delay = Math.max(1000, auction.endAt - Date.now());
-  timers.set(auction.guildId, setTimeout(() => finishAuction(client, auction.guildId), delay));
+  timers.set(auction.id, setTimeout(() => finishAuction(client, auction.id), delay));
 }
 
 async function handleAuctionInteraction(interaction) {
@@ -168,10 +187,16 @@ async function handleAuctionInteraction(interaction) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
     const subcommand = interaction.options.getSubcommand();
     if (subcommand === 'create') {
-      if (auctions.has(interaction.guildId)) return interaction.reply({ content: '本服务器已经有一场进行中的拍卖，请先结束它。', ephemeral: true });
       return interaction.showModal(createModal());
     }
-    return finishAuction(interaction.client, interaction.guildId).then((ended) => interaction.reply({ content: ended ? '拍卖已结束并结算。' : '目前没有进行中的拍卖。', ephemeral: true }));
+    const requestedId = interaction.options.getString('id');
+    const candidates = guildAuctions(interaction.guildId).filter((auction) => !interaction.channelId || auction.channelId === interaction.channelId);
+    const auction = requestedId ? findAuction(interaction.guildId, requestedId) : (candidates.length === 1 ? candidates[0] : null);
+    if (!auction) {
+      if (candidates.length > 1) return interaction.reply({ content: `当前频道有多场拍卖，请填写拍卖 ID：\n${candidates.map((item) => `\`${item.id}\`：${item.item}`).join('\n')}`, ephemeral: true });
+      return interaction.reply({ content: requestedId ? '找不到这个拍卖，或拍卖不属于本服务器。' : '目前没有进行中的拍卖。', ephemeral: true });
+    }
+    return finishAuction(interaction.client, auction.id).then((ended) => interaction.reply({ content: ended ? `拍卖 ${auction.id} 已结束并结算。` : '目前没有进行中的拍卖。', ephemeral: true }));
   }
 
   if (interaction.isModalSubmit() && interaction.customId === 'auction:create-modal') {
@@ -184,14 +209,15 @@ async function handleAuctionInteraction(interaction) {
     });
   }
 
-  if (interaction.isButton() && interaction.customId === 'auction:bid') {
-    const auction = auctions.get(interaction.guildId);
+  if (interaction.isButton() && interaction.customId.startsWith('auction:bid')) {
+    const auctionId = interaction.customId.split(':')[2];
+    const auction = findAuction(interaction.guildId, auctionId, interaction.channelId, interaction.message?.id);
     if (!auction || auction.status !== 'active') return interaction.reply({ content: '这场拍卖已经结束。', ephemeral: true });
-    return interaction.showModal(new ModalBuilder().setCustomId('auction:bid-modal').setTitle(`出价：${auction.item}`).addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('amount').setLabel(`最低出价 ${formatMoney(auction.currentPrice + auction.minIncrement)}`).setPlaceholder('请输入迷你币金额').setStyle(TextInputStyle.Short).setRequired(true))));
+    return interaction.showModal(new ModalBuilder().setCustomId(`auction:bid-modal:${auction.id}`).setTitle(`出价：${auction.item}`).addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('amount').setLabel(`最低出价 ${formatMoney(auction.currentPrice + auction.minIncrement)}`).setPlaceholder('请输入迷你币金额').setStyle(TextInputStyle.Short).setRequired(true))));
   }
 
-  if (interaction.isModalSubmit() && interaction.customId === 'auction:bid-modal') {
-    const auction = auctions.get(interaction.guildId);
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('auction:bid-modal:')) {
+    const auction = findAuction(interaction.guildId, interaction.customId.split(':')[2]);
     if (!auction || auction.status !== 'active') return interaction.reply({ content: '这场拍卖已经结束。', ephemeral: true });
     const amount = parseMoney(interaction.fields.getTextInputValue('amount'));
     const minimum = auction.currentPrice + auction.minIncrement;
@@ -202,7 +228,7 @@ async function handleAuctionInteraction(interaction) {
     auction.highestBid = { userId: interaction.user.id, amount };
     auction.bidCount = (auction.bidCount || 0) + 1;
     saveData();
-    await interaction.update({ embeds: [auctionEmbed(auction, getGuildData(interaction.guildId).name)], components: auctionComponents() });
+    await interaction.update({ embeds: [auctionEmbed(auction, getGuildData(interaction.guildId).name)], components: auctionComponents(auction) });
     return interaction.followUp({ content: `出价成功：${formatMoney(amount)} ${getGuildData(interaction.guildId).name}。`, ephemeral: true });
   }
   return false;

@@ -8,13 +8,15 @@ const transferCommand = new SlashCommandBuilder()
   .setName('transfer')
   .setDescription('转账迷你币给其他成员')
   .addUserOption((option) => option.setName('user').setDescription('收款成员').setRequired(true))
-  .addStringOption((option) => option.setName('amount').setDescription('转账金额，最多两位小数').setRequired(true));
+  .addStringOption((option) => option.setName('amount').setDescription('转账金额，最多两位小数').setRequired(true))
+  .addStringOption((option) => option.setName('reason').setDescription('转账原因（可选）').setRequired(false).setMaxLength(500));
 
 async function handleTransferInteraction(interaction) {
   if (!interaction.isChatInputCommand() || interaction.commandName !== 'transfer') return false;
   if (!interaction.guild) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
   const recipient = interaction.options.getUser('user');
   const amount = parseMoney(interaction.options.getString('amount'));
+  const reason = interaction.options.getString('reason')?.trim() || '';
   const currency = getGuildData(interaction.guildId).name;
   if (!recipient || recipient.bot) return interaction.reply({ content: '不能转账给机器人。', ephemeral: true });
   if (recipient.id === interaction.user.id) return interaction.reply({ content: '不能转账给自己。', ephemeral: true });
@@ -22,12 +24,12 @@ async function handleTransferInteraction(interaction) {
   const senderBalance = getBalance(interaction.guildId, interaction.user.id);
   if (senderBalance < amount) return interaction.reply({ content: `余额不足。你要转账 ${formatMoney(amount)} ${currency}，当前余额为 ${formatMoney(senderBalance)} ${currency}。`, ephemeral: true });
   const senderResult = changeBalance(interaction.guildId, interaction.user.id, -amount, {
-    reason: `成员转账给 ${recipient.tag}`,
+    reason: `成员转账给 ${recipient.tag}${reason ? `（原因：${reason}）` : ''}`,
     actorId: interaction.user.id,
     actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
   });
   const recipientResult = changeBalance(interaction.guildId, recipient.id, amount, {
-    reason: `收到 ${interaction.user.tag} 的成员转账`,
+    reason: `收到 ${interaction.user.tag} 的成员转账${reason ? `（原因：${reason}）` : ''}`,
     actorId: interaction.user.id,
     actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
   });
@@ -39,6 +41,7 @@ async function handleTransferInteraction(interaction) {
       { name: '收款人', value: `${recipient.tag} (<@${recipient.id}>)`, inline: false },
       { name: '转账数量', value: `${formatMoney(amount)} ${currency}`, inline: true },
       { name: '转账人余额', value: `${formatMoney(senderResult.after)} ${currency}`, inline: true },
+      { name: '转账原因', value: reason || '未填写', inline: false },
     )
     .setTimestamp();
   await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -51,6 +54,7 @@ async function handleTransferInteraction(interaction) {
         { name: '转账人', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
         { name: '收到数量', value: `${formatMoney(amount)} ${currency}`, inline: true },
         { name: '收到后余额', value: `${formatMoney(recipientResult.after)} ${currency}`, inline: true },
+        { name: '转账原因', value: reason || '未填写', inline: false },
         { name: '服务器', value: interaction.guild.name, inline: false },
       )
       .setTimestamp()],

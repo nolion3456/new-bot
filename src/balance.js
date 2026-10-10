@@ -151,7 +151,10 @@ function amountModal(action, currency, targetId, messageId = '') {
   return new ModalBuilder()
     .setCustomId(`balance:modal:${action}:${currency}:${targetId}:${messageId}`)
     .setTitle(`${action === 'add' ? '加' : '减'}${currency === 'major' ? '余额' : '迷你币'}`)
-    .addComponents(new ActionRowBuilder().addComponents(data));
+    .addComponents(
+      new ActionRowBuilder().addComponents(data),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reason').setLabel('原因（可选）').setPlaceholder('例如：活动奖励、违规扣除').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500)),
+    );
 }
 
 function isManager(interaction) {
@@ -190,6 +193,7 @@ async function handleBalanceInteraction(interaction) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以操作余额。', ephemeral: true });
     const [, , action, currency, targetIdFromModal, messageIdFromModal] = interaction.customId.split(':');
     const amount = parseMoney(interaction.fields.getTextInputValue('balance:amount'));
+    const reason = interaction.fields.getTextInputValue('reason')?.trim() || '';
     if (amount === null || amount === 0) return interaction.reply({ content: '请输入非 0 金额，最多支持两位小数，例如 `100`、`10.25` 或 `-5.5`。', ephemeral: true });
     const targetId = targetIdFromModal || interaction.user.id;
     const data = getGuildData(interaction.guildId);
@@ -198,7 +202,7 @@ async function handleBalanceInteraction(interaction) {
     const currencyName = currency === 'major' ? '余额' : data.name;
     const change = currency === 'major' ? changeMajorBalance : changeBalance;
     const { before, after } = change(interaction.guildId, targetId, signedAmount, {
-      reason: `管理员手动${actionLabel}${currencyName}`,
+      reason: `管理员手动${actionLabel}${currencyName}${reason ? `（原因：${reason}）` : ''}`,
       actorId: interaction.user.id,
       actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)`,
     });
@@ -212,6 +216,7 @@ async function handleBalanceInteraction(interaction) {
         { name: '变更数量', value: `${signedAmount >= 0 ? '+' : '-'}${formatMoney(Math.abs(signedAmount))} ${currencyName}`, inline: true },
         { name: '变更后余额', value: `${formatMoney(after)} ${currencyName}`, inline: false },
         { name: '操作者', value: `${interaction.user.tag} (<@${interaction.user.id}>)`, inline: false },
+        { name: '原因', value: reason || '未填写', inline: false },
       )
       .setTimestamp();
     const sourceMessage = interaction.message || (messageIdFromModal ? await interaction.channel?.messages.fetch(messageIdFromModal).catch(() => null) : null);
