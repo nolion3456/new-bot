@@ -23,6 +23,7 @@ const { transferCommand, setupTransfers } = require('./transfer');
 const { exchangeCommand, setupExchange } = require('./exchange');
 const { shopCommand, ticketCommand, setupShop } = require('./shop');
 const { canManageGuild } = require('./permissions');
+const { redPacketCommand, setupRedPackets, setRedPacketAuditSender } = require('./redpacket');
 
 const token = process.env.DISCORD_TOKEN;
 const guildId = process.env.DISCORD_GUILD_ID;
@@ -45,6 +46,7 @@ const auditEventOptions = [
   { value: 'unban', label: '成员被解除封禁', description: '显示执行者与成员' },
   { value: 'kick', label: '成员被踢出', description: '显示执行者与被踢成员' },
   { value: 'balanceChange', label: '余额变化', description: '显示余额增加、减少、操作者与变更后余额' },
+  { value: 'redPacket', label: '福袋抢完', description: '显示福袋成功领取成员名单' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
 const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick']);
@@ -76,6 +78,7 @@ const commands = [
   exchangeCommand,
   shopCommand,
   ticketCommand,
+  redPacketCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -336,6 +339,25 @@ setBalanceAuditSender(async ({ guildId, userId, amount, before, after, currency,
   await sendAudit(guild, embed, 'balanceChange', `balance:${userId}:${before}:${after}:${amount}:${reason || ''}:${actorId || ''}`);
 });
 
+setRedPacketAuditSender(async ({ guild, packet, memberIds }) => {
+  const names = [];
+  for (const id of memberIds) {
+    const user = await client.users.fetch(id).catch(() => null);
+    names.push(user ? `${user.tag} (<@${id}>)` : `<@${id}>`);
+  }
+  const embed = new EmbedBuilder()
+    .setColor(0xe74c3c)
+    .setTitle('福袋已被抢完')
+    .addFields(
+      { name: '福袋 ID', value: packet.id, inline: false },
+      { name: '分配方式', value: packet.mode === 'lucky' ? '拼手气' : '平均分配', inline: true },
+      { name: '领取人数', value: String(memberIds.length), inline: true },
+      { name: '成功领取成员', value: names.join('\n').slice(0, 1024) || '无', inline: false },
+    )
+    .setTimestamp();
+  await sendAudit(guild, embed, 'redPacket', `red-packet:${packet.id}:claimed`);
+});
+
 async function findRecentExecutor(guild, type, targetId) {
   const entry = await findRecentAuditEntry(guild, type, targetId);
   return entry?.executor || null;
@@ -367,7 +389,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:') || interaction.customId.startsWith('redpacket:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -477,6 +499,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/transfer` 转账迷你币给指定成员，并私讯收款人',
           '`/exchange` 管理员设置并发布公开兑换面板',
           '`/shop` 管理员设置并发布公开商城面板',
+          '`/redpacket create` 管理员发送平均或拼手气福袋，可设置身份组条件和结束时间',
           '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
@@ -690,6 +713,7 @@ setupGambling(client);
 setupTransfers(client);
 setupExchange(client);
 setupShop(client);
+setupRedPackets(client);
 client.login(token).catch((error) => {
   console.error('Discord login failed:', error?.message || error);
   process.exitCode = 1;
