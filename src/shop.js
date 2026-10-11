@@ -17,7 +17,7 @@ const {
   UserSelectMenuBuilder,
 } = require('discord.js');
 const { canManageGuild } = require('./permissions');
-const { changeMajorBalance, getMajorBalance, formatMoney, parseMoney } = require('./balance');
+const { changeBalance, changeMajorBalance, getBalance, getMajorBalance, getGuildData, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'shop.json');
@@ -34,7 +34,7 @@ const shopCommand = new SlashCommandBuilder()
 const ticketCommand = new SlashCommandBuilder().setName('ticket').setDescription('在当前商城工单中打开管理面板').setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString());
 
 function defaultShop() {
-  return { nextId: 1, products: [], ticketCategoryId: null, recordChannelId: null, reviewChannelId: null, coupons: [] };
+  return { nextId: 1, currency: 'major', products: [], ticketCategoryId: null, recordChannelId: null, reviewChannelId: null, coupons: [] };
 }
 function normalizeProduct(product, fallbackId) {
   const infoItems = Array.isArray(product.infoItems) ? product.infoItems.map((item, index) => ({
@@ -62,6 +62,7 @@ function loadData() {
     for (const [guildId, shop] of Object.entries(raw)) {
       shops.set(guildId, {
         nextId: Number(shop.nextId) || 1,
+        currency: shop.currency === 'mini' ? 'mini' : 'major',
         products: (shop.products || []).map((product, index) => normalizeProduct(product, index + 1)),
         ticketCategoryId: shop.ticketCategoryId || null,
         recordChannelId: shop.recordChannelId || null,
@@ -97,8 +98,14 @@ function saveTickets() {
 }
 function getShop(guildId) {
   if (!shops.has(guildId)) shops.set(guildId, defaultShop());
-  return shops.get(guildId);
+  const shop = shops.get(guildId);
+  if (!Object.prototype.hasOwnProperty.call(shop, '_guildId')) Object.defineProperty(shop, '_guildId', { value: guildId, writable: true, configurable: true, enumerable: false });
+  return shop;
 }
+function currencyUnit(shop) { return shop.currency === 'mini' ? getGuildData(shop._guildId).name : '余额'; }
+function getShopBalance(guildId, userId, shop) { return shop.currency === 'mini' ? getBalance(guildId, userId) : getMajorBalance(guildId, userId); }
+function changeShopBalance(guildId, userId, amount, shop, metadata = {}) { return shop.currency === 'mini' ? changeBalance(guildId, userId, amount, metadata) : changeMajorBalance(guildId, userId, amount, metadata); }
+function ticketUnit(ticket) { return ticket.currency === 'mini' ? getGuildData(ticket.guildId).name : '余额'; }
 async function sanitizeShopSettings(guild, shop) {
   let changed = false;
   const checks = [
@@ -133,14 +140,14 @@ function productStatus(product) {
 }
 function adminEmbed(shop, selectedId = null) {
   const lines = shop.products.length
-    ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} 余额｜${productStatus(product)}${product.infoStorage ? `｜已储存资料 ${product.infoItems.length} 条` : ''}${selectedId === product.id ? ' ← 当前选择' : ''}`)
+    ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} ${currencyUnit(shop)}｜${productStatus(product)}${product.infoStorage ? `｜已储存资料 ${product.infoItems.length} 条` : ''}${selectedId === product.id ? ' ← 当前选择' : ''}`)
     : ['目前还没有商品，请先点击“上架商品”。'];
   return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription('这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 `-1` 代表无限数量。\n\n' + lines.join('\n')).addFields(
     { name: '工单分类', value: shop.ticketCategoryId ? `<#${shop.ticketCategoryId}>` : '未设置（自动放在最上方）', inline: true },
     { name: '记录频道', value: shop.recordChannelId ? `<#${shop.recordChannelId}>` : '未设置（生成记录时需要设置）', inline: true },
     { name: '评价频道', value: shop.reviewChannelId ? `<#${shop.reviewChannelId}>` : '未设置（默认发在工单频道）', inline: true },
-    { name: '优惠券', value: shop.coupons.length ? shop.coupons.map((coupon) => `${coupon.code}（${coupon.type === 'percent' ? `${coupon.value}%` : formatMoney(coupon.value)}，${coupon.maxUses ? `剩余/总次数 ${Math.max(0, coupon.maxUses - (coupon.usedBy || []).length)}/${coupon.maxUses}` : '不限次数'}）`).join('\n').slice(0, 1024) : '尚未设置优惠券', inline: false },
-  ).setFooter({ text: '点击“发布公开商城”后，成员可在当前频道逛商城' });
+    { name: '优惠券', value: shop.coupons.length ? shop.coupons.map((coupon) => `${coupon.code}（${coupon.type === 'percent' ? `${coupon.value}%` : `${formatMoney(coupon.value)} ${currencyUnit(shop)}`}，${coupon.maxUses ? `剩余/总次数 ${Math.max(0, coupon.maxUses - (coupon.usedBy || []).length)}/${coupon.maxUses}` : '不限次数'}）`).join('\n').slice(0, 1024) : '尚未设置优惠券', inline: false },
+  ).setFooter({ text: `商城支付币种：${currencyUnit(shop)}｜点击“发布公开商城”后，成员可在当前频道逛商城` });
 }
 function adminComponents(shop, selectedId = null) {
   const rows = [new ActionRowBuilder().addComponents(
@@ -148,6 +155,7 @@ function adminComponents(shop, selectedId = null) {
     new ButtonBuilder().setCustomId('shop:admin:publish').setLabel('发布公开商城').setEmoji('🛒').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('shop:admin:review-settings').setLabel('评价频道').setEmoji('⭐').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('shop:admin:coupon').setLabel('优惠券').setEmoji('🎟️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('shop:admin:currency').setLabel('支付币种').setEmoji('💱').setStyle(ButtonStyle.Secondary),
   )];
   const categorySelect = new ChannelSelectMenuBuilder().setCustomId('shop:admin:category').setPlaceholder('🗂️ 设置工单分类（可选）').setChannelTypes(ChannelType.GuildCategory);
   if (shop.ticketCategoryId) categorySelect.setDefaultChannels(shop.ticketCategoryId);
@@ -156,7 +164,7 @@ function adminComponents(shop, selectedId = null) {
   if (shop.recordChannelId) recordSelect.setDefaultChannels(shop.recordChannelId);
   rows.push(new ActionRowBuilder().addComponents(recordSelect));
   if (shop.products.length) {
-    const options = shop.products.slice(0, 25).map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id).setDefault(product.id === selectedId));
+    const options = shop.products.slice(0, 25).map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} ${currencyUnit(shop)}｜${productStatus(product)}`.slice(0, 100)).setValue(product.id).setDefault(product.id === selectedId));
     rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:admin:select').setPlaceholder('选择要管理的商品').addOptions(options)));
   }
   if (selectedId && selectedProduct(shop, selectedId)) {
@@ -175,7 +183,7 @@ function productModal(mode, product = {}) {
   return modal.addComponents(
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('name').setLabel('商品名称').setValue(product.name || '').setMaxLength(80).setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('商品说明').setValue(product.description || '').setMaxLength(400).setStyle(TextInputStyle.Paragraph).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('价格（余额）').setPlaceholder('例如 10.50').setValue(product.price !== undefined ? String(product.price) : '').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('价格（当前支付币种）').setPlaceholder('例如 10.50').setValue(product.price !== undefined ? String(product.price) : '').setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('stock').setLabel('数量（-1 = 无限）').setPlaceholder('例如 10 或 -1').setValue(product.stock !== undefined ? String(product.stock) : '').setStyle(TextInputStyle.Short).setRequired(true)),
   );
 }
@@ -186,28 +194,28 @@ function infoItemModal(productId) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('资料描述（可选）').setPlaceholder('例如：等级、服务器、备注').setStyle(TextInputStyle.Paragraph).setRequired(false)),
   );
 }
-function publicEmbed() {
-  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 服务器商城').setDescription('点击下方“逛商城”按钮，机器人会私密显示商品列表和购买操作。').setFooter({ text: '所有商品使用大面额余额购买｜购买前会进行二次确认' });
+function publicEmbed(shop) {
+  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 服务器商城').setDescription('点击下方“逛商城”按钮，机器人会私密显示商品列表和购买操作。').setFooter({ text: `所有商品使用 ${currencyUnit(shop)} 购买｜购买前会进行二次确认` });
 }
 function browseEmbed(shop, showAll = false) {
   const products = shop.products.filter((product) => product.active && (showAll || product.stock === -1 || product.stock > 0));
   const text = products.length
-    ? products.map((product) => `**${product.name}**\n${product.description}\n价格：**${formatMoney(product.price)} 余额**｜${productStatus(product)}`).join('\n\n')
+    ? products.map((product) => `**${product.name}**\n${product.description}\n价格：**${formatMoney(product.price)} ${currencyUnit(shop)}**｜${productStatus(product)}`).join('\n\n')
     : (showAll ? '目前没有已上架的商品。' : '目前没有有货的商品，请切换到“查看全部”。');
   return new EmbedBuilder().setColor(0x9b59b6).setTitle(`🛍️ 私密商城｜${showAll ? '查看全部' : '只看有货'}`).setDescription(text);
 }
 function browseComponents(shop, showAll = false) {
   const products = shop.products.filter((product) => product.active && (showAll || product.stock === -1 || product.stock > 0)).slice(0, 25);
   const rows = [];
-  if (products.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:browse:select').setPlaceholder('🛍️ 选择商品查看并购买').addOptions(products.map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} 余额｜${productStatus(product)}`.slice(0, 100)).setValue(product.id)))));
+  if (products.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:browse:select').setPlaceholder('🛍️ 选择商品查看并购买').addOptions(products.map((product) => new StringSelectMenuOptionBuilder().setLabel(product.name.slice(0, 100)).setDescription(`${formatMoney(product.price)} ${currencyUnit(shop)}｜${productStatus(product)}`.slice(0, 100)).setValue(product.id)))));
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('shop:filter:stock').setLabel('只看有货').setEmoji('✅').setStyle(showAll ? ButtonStyle.Secondary : ButtonStyle.Success),
     new ButtonBuilder().setCustomId('shop:filter:all').setLabel('查看全部').setEmoji('📋').setStyle(showAll ? ButtonStyle.Success : ButtonStyle.Secondary),
   ));
   return rows;
 }
-function detailEmbed(product) {
-  return new EmbedBuilder().setColor(0x5865f2).setTitle(`📦 ${product.name}`).setDescription(product.description).addFields({ name: '价格', value: `${formatMoney(product.price)} 余额`, inline: true }, { name: '库存', value: product.stock === -1 ? '无限数量' : String(product.stock), inline: true });
+function detailEmbed(product, shop) {
+  return new EmbedBuilder().setColor(0x5865f2).setTitle(`📦 ${product.name}`).setDescription(product.description).addFields({ name: '价格', value: `${formatMoney(product.price)} ${currencyUnit(shop)}`, inline: true }, { name: '库存', value: product.stock === -1 ? '无限数量' : String(product.stock), inline: true });
 }
 function cartKey(interaction) { return `${interaction.guildId}:${interaction.user.id}`; }
 function getCart(interaction) {
@@ -220,13 +228,13 @@ function cartEmbed(interaction) {
   const lines = cart.length ? cart.map((item) => {
     const product = selectedProduct(shop, item.productId);
     const price = product?.price ?? item.price;
-    return `**${product?.name || item.name}** × ${item.quantity}｜${formatMoney(price * item.quantity)} 余额`;
+    return `**${product?.name || item.name}** × ${item.quantity}｜${formatMoney(price * item.quantity)} ${currencyUnit(shop)}`;
   }) : ['购物车目前是空的。'];
   const total = cart.reduce((sum, item) => {
     const product = selectedProduct(shop, item.productId);
     return sum + (product?.price ?? item.price) * item.quantity;
   }, 0);
-  return new EmbedBuilder().setColor(0x2ecc71).setTitle('🛒 我的购物车').setDescription(lines.join('\n')).addFields({ name: '商品种类', value: String(cart.length), inline: true }, { name: '预计总价', value: `${formatMoney(total)} 余额`, inline: true });
+  return new EmbedBuilder().setColor(0x2ecc71).setTitle('🛒 我的购物车').setDescription(lines.join('\n')).addFields({ name: '商品种类', value: String(cart.length), inline: true }, { name: '预计总价', value: `${formatMoney(total)} ${currencyUnit(shop)}`, inline: true });
 }
 function cartComponents(interaction) {
   const hasItems = getCart(interaction).length > 0;
@@ -288,7 +296,7 @@ function ticketEmbed(ticket) {
     { name: '购买成员', value: `<@${ticket.buyerId}>`, inline: true },
     { name: '商品', value: itemText.slice(0, 1024), inline: false },
     { name: '数量', value: String(ticket.quantity), inline: true },
-    { name: '支付总价', value: `${formatMoney(ticket.total)} 余额`, inline: true },
+    { name: '支付总价', value: `${formatMoney(ticket.total)} ${ticketUnit(ticket)}`, inline: true },
     { name: '状态', value: status === 'processing' ? `处理中（<@${ticket.claimedBy}>）` : ({ open: '等待处理', completed: '已完成', cancelled: ticket.refunded ? '已取消（已退款）' : '已取消', closed: '已关闭' }[status] || status), inline: true },
     ...(ticket.couponCode ? [{ name: '优惠券', value: `${ticket.couponCode}（-${formatMoney(ticket.discount || 0)}）`, inline: true }] : []),
   ).setFooter({ text: `工单创建时间：${new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` });
@@ -345,7 +353,7 @@ function escapeHtml(value) {
 function ticketHtml(ticket, transcript = []) {
   const items = ticket.items?.length ? ticket.items.map((item) => `<li>${escapeHtml(item.name)} × ${item.quantity}</li>`).join('') : `<li>${escapeHtml(ticket.productName)} × ${ticket.quantity}</li>`;
   const chat = transcript.length ? transcript.map((message) => `<article><b>${escapeHtml(message.author)}</b> <time>${escapeHtml(message.time)}</time><p>${escapeHtml(message.content || '（无文字内容）').replace(/\n/g, '<br>')}</p>${message.attachments.length ? `<p>附件：${message.attachments.map(escapeHtml).join('<br>')}</p>` : ''}</article>`).join('') : '<p>未读取到聊天记录。</p>';
-  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:860px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}article{border-top:1px solid #ddd;padding:12px 0}time{color:#777;font-size:12px}article p{white-space:normal;margin:6px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd><ul>${items}</ul></dd><dt>商品总数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} 余额</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl><h2>聊天记录</h2>${chat}`;
+  return `<!doctype html><meta charset="utf-8"><title>商城购买记录</title><style>body{font:16px sans-serif;max-width:860px;margin:40px auto;padding:0 20px}dt{font-weight:bold;margin-top:16px}dd{margin:4px 0}article{border-top:1px solid #ddd;padding:12px 0}time{color:#777;font-size:12px}article p{white-space:normal;margin:6px 0}</style><h1>商城购买记录</h1><dl><dt>购买成员</dt><dd>${escapeHtml(ticket.buyerName)} (${escapeHtml(ticket.buyerId)})</dd><dt>商品</dt><dd><ul>${items}</ul></dd><dt>商品总数量</dt><dd>${ticket.quantity}</dd><dt>支付总价</dt><dd>${formatMoney(ticket.total)} ${escapeHtml(ticketUnit(ticket))}</dd><dt>创建时间</dt><dd>${escapeHtml(new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }))}</dd><dt>认领管理员</dt><dd>${escapeHtml(ticket.claimedByName || '未认领')}</dd><dt>关闭时间</dt><dd>${ticket.closedAt ? escapeHtml(new Date(ticket.closedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })) : '未关闭'}</dd></dl><h2>聊天记录</h2>${chat}`;
 }
 async function collectTranscript(channel) {
   const messages = [];
@@ -417,7 +425,7 @@ async function refreshTicketPanel(ticket, guild) {
 }
 function ticketRefund(ticket, interaction, reason) {
   if (ticket.refunded || !ticket.total) return false;
-  changeMajorBalance(ticket.guildId, ticket.buyerId, ticket.total, { reason, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+  changeShopBalance(ticket.guildId, ticket.buyerId, ticket.total, { currency: ticket.currency === 'mini' ? 'mini' : 'major', _guildId: ticket.guildId }, { reason, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
   ticket.refunded = true;
   return true;
 }
@@ -598,7 +606,7 @@ async function handleShop(interaction) {
     }
     else buttons.push(new ButtonBuilder().setCustomId('shop:soldout').setLabel('已售罄').setEmoji('⛔').setStyle(ButtonStyle.Secondary).setDisabled(true));
     buttons.push(new ButtonBuilder().setCustomId('shop:back').setLabel('返回商品列表').setEmoji('↩️').setStyle(ButtonStyle.Secondary));
-    return interaction.update({ embeds: [detailEmbed(product)], components: [new ActionRowBuilder().addComponents(buttons)] });
+    return interaction.update({ embeds: [detailEmbed(product, getShop(interaction.guildId))], components: [new ActionRowBuilder().addComponents(buttons)] });
   }
   if (interaction.isButton() && interaction.customId === 'shop:back') {
     const showAll = browseSessions.get(key(interaction))?.showAll || false;
@@ -631,25 +639,26 @@ async function handleShop(interaction) {
   }
   if (interaction.isButton() && interaction.customId === 'shop:cart:checkout') {
     const summary = currentCart(interaction);
+    const shop = getShop(interaction.guildId);
     if (summary.error) return interaction.reply({ content: `无法结算：${summary.error}`, ephemeral: true });
     if (!summary.items.length) return interaction.reply({ content: '购物车目前是空的。', ephemeral: true });
-    const balance = getMajorBalance(interaction.guildId, interaction.user.id);
-    if (balance < summary.total) return interaction.reply({ content: `余额不足，需要 ${formatMoney(summary.total)} 余额，你目前有 ${formatMoney(balance)} 余额。`, ephemeral: true });
+    const balance = getShopBalance(interaction.guildId, interaction.user.id, shop);
+    if (balance < summary.total) return interaction.reply({ content: `${currencyUnit(shop)}不足，需要 ${formatMoney(summary.total)} ${currencyUnit(shop)}，你目前有 ${formatMoney(balance)} ${currencyUnit(shop)}。`, ephemeral: true });
     const itemText = summary.items.map((item) => `${item.name} × ${item.quantity}`).join('\n');
-    return interaction.update({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('⚠️ 确认结算购物车').setDescription(`${itemText}\n\n应付总价：**${formatMoney(summary.total)} 余额**\n\n请确认后才会统一扣款并创建一个合并工单。`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:cart:confirm').setLabel('确认结算').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cart:cancel').setLabel('返回购物车').setEmoji('↩️').setStyle(ButtonStyle.Secondary))] });
+    return interaction.update({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle('⚠️ 确认结算购物车').setDescription(`${itemText}\n\n应付总价：**${formatMoney(summary.total)} ${currencyUnit(shop)}**\n\n请确认后才会统一扣款并创建一个合并工单。`)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:cart:confirm').setLabel('确认结算').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cart:cancel').setLabel('返回购物车').setEmoji('↩️').setStyle(ButtonStyle.Secondary))] });
   }
   if (interaction.isButton() && interaction.customId === 'shop:cart:cancel') return interaction.update({ embeds: [cartEmbed(interaction)], components: cartComponents(interaction) });
   if (interaction.isButton() && interaction.customId === 'shop:cart:confirm') {
     const summary = currentCart(interaction);
-    if (summary.error) return interaction.update({ content: `结算失败：${summary.error}`, embeds: [], components: [] });
-    const balance = getMajorBalance(interaction.guildId, interaction.user.id);
-    if (!summary.items.length || balance < summary.total) return interaction.update({ content: '结算失败：购物车为空或余额不足。', embeds: [], components: [] });
     const shop = getShop(interaction.guildId);
+    if (summary.error) return interaction.update({ content: `结算失败：${summary.error}`, embeds: [], components: [] });
+    const balance = getShopBalance(interaction.guildId, interaction.user.id, shop);
+    if (!summary.items.length || balance < summary.total) return interaction.update({ content: '结算失败：购物车为空或余额不足。', embeds: [], components: [] });
     for (const item of summary.items) {
       const current = selectedProduct(shop, item.productId);
       if (!current || !current.active || (current.stock !== -1 && current.stock < item.quantity) || !hasInfoStock(current, item.quantity)) return interaction.update({ content: `结算失败：${item.name} 的库存或商品资料刚刚发生变化，请重新检查购物车。`, embeds: [], components: [] });
     }
-    changeMajorBalance(interaction.guildId, interaction.user.id, -summary.total, { reason: `商城购物车结算：${summary.items.length} 种商品`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    changeShopBalance(interaction.guildId, interaction.user.id, -summary.total, shop, { reason: `商城购物车结算：${summary.items.length} 种商品`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     const infoDeliveries = [];
     for (const item of summary.items) {
       const current = selectedProduct(shop, item.productId);
@@ -657,11 +666,11 @@ async function handleShop(interaction) {
       if (current.infoStorage) infoDeliveries.push(...takeRandomInfo(current, item.quantity));
     }
     saveData();
-    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: `${summary.items.length} 种商品`, quantity: summary.items.reduce((sum, item) => sum + item.quantity, 0), total: summary.total, baseTotal: summary.total, items: summary.items, infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: `${summary.items.length} 种商品`, quantity: summary.items.reduce((sum, item) => sum + item.quantity, 0), total: summary.total, baseTotal: summary.total, currency: shop.currency, items: summary.items, infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
     carts.set(cartKey(interaction), []);
     await interaction.deferUpdate();
     const ticketChannel = await createTicket(interaction, ticket).catch((error) => { console.error('Failed to create shop cart ticket:', error.message); return null; });
-    return interaction.editReply({ content: `购物车结算成功\n\n商品种类：${summary.items.length}\n商品总数量：${ticket.quantity}\n支付总价：${formatMoney(summary.total)} 余额\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额\n\n${ticketChannel ? `合并工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
+    return interaction.editReply({ content: `购物车结算成功\n\n商品种类：${summary.items.length}\n商品总数量：${ticket.quantity}\n支付总价：${formatMoney(summary.total)} ${currencyUnit(shop)}\n扣款后余额：${formatMoney(getShopBalance(interaction.guildId, interaction.user.id, shop))} ${currencyUnit(shop)}\n\n${ticketChannel ? `合并工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:buy:')) {
     const product = selectedProduct(getShop(interaction.guildId), interaction.customId.split(':')[2]);
@@ -675,8 +684,9 @@ async function handleShop(interaction) {
     if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.reply({ content: '这个商品刚刚下架或已经售罄。', ephemeral: true });
     if (!Number.isInteger(quantity) || quantity < 1 || (product.stock !== -1 && quantity > product.stock)) return interaction.reply({ content: `购买数量必须是正整数${product.stock === -1 ? '' : `，且不能超过库存 ${product.stock}`}。`, ephemeral: true });
     const total = Math.round(product.price * quantity * 100) / 100;
-    return interaction.reply({ embeds: [detailEmbed(product).setDescription(`${product.description}\n\n⚠️ 请确认购买数量和总价。`)
-      .addFields({ name: '购买数量', value: String(quantity), inline: true }, { name: '应付总价', value: `${formatMoney(total)} 余额`, inline: true })], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`shop:confirm:${product.id}:${quantity}`).setLabel('确认购买').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cancel').setLabel('取消购买').setEmoji('❌').setStyle(ButtonStyle.Secondary))], ephemeral: true });
+    const shop = getShop(interaction.guildId);
+    return interaction.reply({ embeds: [detailEmbed(product, shop).setDescription(`${product.description}\n\n⚠️ 请确认购买数量和总价。`)
+      .addFields({ name: '购买数量', value: String(quantity), inline: true }, { name: '应付总价', value: `${formatMoney(total)} ${currencyUnit(shop)}`, inline: true })], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`shop:confirm:${product.id}:${quantity}`).setLabel('确认购买').setEmoji('✅').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('shop:cancel').setLabel('取消购买').setEmoji('❌').setStyle(ButtonStyle.Secondary))], ephemeral: true });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:confirm:')) {
     const [, , productId, quantityText] = interaction.customId.split(':');
@@ -685,23 +695,23 @@ async function handleShop(interaction) {
     if (!product || !product.active || (product.stock !== -1 && product.stock <= 0)) return interaction.update({ content: '购买失败：商品已下架或售罄。', embeds: [], components: [] });
     if (!Number.isInteger(quantity) || quantity < 1 || (product.stock !== -1 && quantity > product.stock)) return interaction.update({ content: '购买失败：库存不足，请重新选择数量。', embeds: [], components: [] });
     const total = Math.round(product.price * quantity * 100) / 100;
-    const balance = getMajorBalance(interaction.guildId, interaction.user.id);
-    if (balance < total) return interaction.update({ content: `购买失败：余额不足，需要 ${formatMoney(total)} 余额，你目前有 ${formatMoney(balance)} 余额。`, embeds: [], components: [] });
     const shop = getShop(interaction.guildId);
+    const balance = getShopBalance(interaction.guildId, interaction.user.id, shop);
+    if (balance < total) return interaction.update({ content: `购买失败：${currencyUnit(shop)}不足，需要 ${formatMoney(total)} ${currencyUnit(shop)}，你目前有 ${formatMoney(balance)} ${currencyUnit(shop)}。`, embeds: [], components: [] });
     const current = selectedProduct(shop, product.id);
     if (!current || !current.active || (current.stock !== -1 && current.stock <= 0)) return interaction.update({ content: '购买失败：商品库存刚刚发生变化。', embeds: [], components: [] });
     if ((current.stock !== -1 && quantity > current.stock) || !hasInfoStock(current, quantity)) return interaction.update({ content: '购买失败：商品库存或商品资料刚刚发生变化。', embeds: [], components: [] });
-    changeMajorBalance(interaction.guildId, interaction.user.id, -total, { reason: `商城购买：${current.name} × ${quantity}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    changeShopBalance(interaction.guildId, interaction.user.id, -total, shop, { reason: `商城购买：${current.name} × ${quantity}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     if (current.stock !== -1) current.stock -= quantity;
     const infoDeliveries = current.infoStorage ? takeRandomInfo(current, quantity) : [];
     saveData();
     await interaction.deferUpdate();
-    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: current.name, quantity, total, baseTotal: total, items: [{ productId: current.id, name: current.name, quantity, price: current.price, subtotal: total }], infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
+    const ticket = { guildId: interaction.guildId, buyerId: interaction.user.id, buyerName: interaction.user.username, productName: current.name, quantity, total, baseTotal: total, currency: shop.currency, items: [{ productId: current.id, name: current.name, quantity, price: current.price, subtotal: total }], infoDeliveries, createdAt: Date.now(), claimedBy: null, claimedByName: null, closed: false, status: 'open', closedAt: null };
     const ticketChannel = await createTicket(interaction, ticket).catch((error) => {
       console.error('Failed to create shop ticket:', error.message);
       return null;
     });
-    return interaction.editReply({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} 余额\n支付总价：${formatMoney(total)} 余额\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getMajorBalance(interaction.guildId, interaction.user.id))} 余额\n\n${ticketChannel ? `工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
+    return interaction.editReply({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} ${currencyUnit(shop)}\n支付总价：${formatMoney(total)} ${currencyUnit(shop)}\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getShopBalance(interaction.guildId, interaction.user.id, shop))} ${currencyUnit(shop)}\n\n${ticketChannel ? `工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
   }
   if (interaction.isButton() && interaction.customId.startsWith('shop:admin:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
@@ -709,6 +719,13 @@ async function handleShop(interaction) {
     if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
     const action = interaction.customId.split(':')[2];
     if (action === 'add') return interaction.showModal(productModal('add'));
+    if (action === 'currency') {
+      const select = new StringSelectMenuBuilder().setCustomId('shop:admin:currency-select').setPlaceholder('选择商城支付币种').addOptions(
+        new StringSelectMenuOptionBuilder().setLabel('余额').setDescription('使用大面额余额').setValue('major').setDefault(session.shop.currency !== 'mini'),
+        new StringSelectMenuOptionBuilder().setLabel('迷你币').setDescription('使用本服务器的迷你币').setValue('mini').setDefault(session.shop.currency === 'mini'),
+      );
+      return interaction.reply({ content: `当前商城支付币种：${currencyUnit(session.shop)}。选择后，新购买和订单调整会使用该币种。已有订单保持创建时币种。`, components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
+    }
     if (action === 'coupon') return interaction.showModal(new ModalBuilder().setCustomId('shop:ticket-admin:coupon-modal').setTitle('设置优惠券').addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('代码').setPlaceholder('例如 SAVE10').setStyle(TextInputStyle.Short).setRequired(true)),
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('type').setLabel('类型：percent 或 fixed').setValue('percent').setStyle(TextInputStyle.Short).setRequired(true)),
@@ -724,7 +741,7 @@ async function handleShop(interaction) {
     if (action === 'publish') {
       shops.set(interaction.guildId, session.shop); saveData(); sessions.delete(key(interaction));
       await interaction.update({ content: '商城商品已保存，公开商城面板已发布到当前频道。', embeds: [], components: [] });
-      return interaction.channel.send({ embeds: [publicEmbed()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:browse').setLabel('逛商城').setEmoji('🛍️').setStyle(ButtonStyle.Primary))] });
+      return interaction.channel.send({ embeds: [publicEmbed(session.shop)], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:browse').setLabel('逛商城').setEmoji('🛍️').setStyle(ButtonStyle.Primary))] });
     }
     const product = selectedProduct(session.shop, session.selectedId);
     if (!product) return interaction.reply({ content: '请先从下拉菜单选择商品。', ephemeral: true });
@@ -748,6 +765,13 @@ async function handleShop(interaction) {
     if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
     session.selectedId = interaction.values[0];
     return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
+  }
+  if (interaction.isStringSelectMenu() && interaction.customId === 'shop:admin:currency-select') {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
+    session.shop.currency = interaction.values[0] === 'mini' ? 'mini' : 'major';
+    return interaction.update({ content: `已选择商城支付币种：${currencyUnit(session.shop)}。请点击管理面板的“发布公开商城”保存设置。`, components: [] });
   }
   if (interaction.isModalSubmit() && interaction.customId === 'shop:ticket-admin:coupon-modal') {
     if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以设置优惠券。', ephemeral: true });
@@ -803,13 +827,14 @@ async function handleShop(interaction) {
     const discount = ticket.couponCode ? couponDiscount(shop.coupons.find((coupon) => coupon.code.toLowerCase() === ticket.couponCode.toLowerCase()), baseTotal) : 0;
     const newTotal = Math.max(0, Math.round((baseTotal - discount) * 100) / 100);
     const delta = Math.round((newTotal - ticket.total) * 100) / 100;
-    if (delta > 0 && getMajorBalance(interaction.guildId, interaction.user.id) < delta) return interaction.reply({ content: `编辑后还需要补款 ${formatMoney(delta)} 余额，但你的余额不足。`, ephemeral: true });
+    const shopCurrency = { currency: ticket.currency === 'mini' ? 'mini' : 'major', _guildId: interaction.guildId };
+    if (delta > 0 && getShopBalance(interaction.guildId, interaction.user.id, shopCurrency) < delta) return interaction.reply({ content: `编辑后还需要补款 ${formatMoney(delta)} ${ticketUnit(ticket)}，但你的余额不足。`, ephemeral: true });
     for (const item of oldItems) { const product = selectedProduct(shop, item.productId); if (product?.stock !== -1) product.stock += item.quantity; }
     for (const item of newItems) { const product = selectedProduct(shop, item.productId); if (product.stock !== -1) product.stock -= item.quantity; }
-    if (delta) changeMajorBalance(interaction.guildId, interaction.user.id, -delta, { reason: '编辑商城订单金额调整', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    if (delta) changeShopBalance(interaction.guildId, interaction.user.id, -delta, shopCurrency, { reason: '编辑商城订单金额调整', actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     ticket.items = newItems; ticket.productName = `${newItems.length} 种商品`; ticket.quantity = newItems.reduce((sum, item) => sum + item.quantity, 0); ticket.baseTotal = baseTotal; ticket.discount = discount; ticket.total = newTotal;
     saveData(); saveTickets(); await refreshTicketPanel(ticket, interaction.guild);
-    return interaction.reply({ content: `订单商品已更新，当前总价为 ${formatMoney(newTotal)} 余额。${delta < 0 ? `已退回 ${formatMoney(-delta)} 余额。` : delta > 0 ? `已补扣 ${formatMoney(delta)} 余额。` : ''}`, ephemeral: true });
+    return interaction.reply({ content: `订单商品已更新，当前总价为 ${formatMoney(newTotal)} ${ticketUnit(ticket)}。${delta < 0 ? `已退回 ${formatMoney(-delta)} ${ticketUnit(ticket)}。` : delta > 0 ? `已补扣 ${formatMoney(delta)} ${ticketUnit(ticket)}。` : ''}`, ephemeral: true });
   }
   if (interaction.isModalSubmit() && interaction.customId === 'shop:ticket:coupon-modal') {
     const ticket = tickets.get(interaction.channelId);
@@ -822,10 +847,10 @@ async function handleShop(interaction) {
     const coupon = result.coupon;
     const discount = couponDiscount(coupon, ticket.baseTotal || ticket.total);
     if (discount <= 0) return interaction.reply({ content: '这张优惠券无法减少当前订单金额。', ephemeral: true });
-    changeMajorBalance(interaction.guildId, ticket.buyerId, discount, { reason: `使用优惠券：${coupon.code}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
+    changeShopBalance(interaction.guildId, ticket.buyerId, discount, { currency: ticket.currency === 'mini' ? 'mini' : 'major', _guildId: interaction.guildId }, { reason: `使用优惠券：${coupon.code}`, actorId: interaction.user.id, actorLabel: `${interaction.user.tag} (<@${interaction.user.id}>)` });
     coupon.usedBy = coupon.usedBy || []; coupon.usedBy.push(ticket.buyerId); ticket.couponCode = coupon.code; ticket.discount = discount; ticket.total = Math.max(0, Math.round((ticket.baseTotal - discount) * 100) / 100);
     saveData(); saveTickets(); await refreshTicketPanel(ticket, interaction.guild);
-    return interaction.reply({ content: `优惠券使用成功，已退回 ${formatMoney(discount)} 余额。`, ephemeral: true });
+    return interaction.reply({ content: `优惠券使用成功，已退回 ${formatMoney(discount)} ${ticketUnit(ticket)}。`, ephemeral: true });
   }
   if (interaction.isModalSubmit() && interaction.customId === 'shop:ticket:review-modal') {
     const ticket = tickets.get(interaction.channelId);
