@@ -115,7 +115,7 @@ npm start
 ## 环境变量
 
 - `DISCORD_TOKEN`：Discord Bot Token，必填。
-- Slash 指令会自动注册为全局指令，机器人加入的所有服务器都可以使用，不需要设置服务器 ID。首次注册或更新全局指令可能需要 Discord 一段时间同步。
+- Slash 指令会自动注册为全局指令，机器人加入的所有服务器都可以使用。若希望某些服务器优先立即获得全部指令，可设置 `DISCORD_GUILD_IDS`，用逗号、空格或分号填写多个服务器 ID；这些服务器会先进行 Guild 指令注册，其他服务器继续使用全局指令并等待 Discord 同步。单服务器旧变量 `DISCORD_GUILD_ID` 仍兼容，但建议改用 `DISCORD_GUILD_IDS`。
 - `PORT`：可选，默认 `3000`。
 - `REDPACKET_AUTO_CLAIM_USER_IDS`：可选，填写需要自动代抢福袋的 Discord 成员 ID，可用逗号、空格或分号分隔多个 ID。机器人发布福袋后，会按照 env 中的顺序立即代这些成员领取；因此第一个 ID 一定优先尝试。此功能没有 Slash 指令，未设置时完全关闭。
 - `REDPACKET_AUTO_CLAIM_GUILD_ID`：可选，将自动代抢限制在指定服务器；不填写时，配置的成员 ID 会在机器人所在的所有服务器尝试领取。成员不存在、没有福袋要求的身份组或名额已满时，会跳过该 ID 并继续下一个。

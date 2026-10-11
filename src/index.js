@@ -24,6 +24,10 @@ const { shopCommand, ticketCommand, setupShop } = require('./shop');
 const { canManageGuild } = require('./permissions');
 const { redPacketCommand, setupRedPackets, setRedPacketAuditSender } = require('./redpacket');
 const token = process.env.DISCORD_TOKEN;
+const priorityGuildIds = [...new Set(String(process.env.DISCORD_GUILD_IDS || process.env.DISCORD_GUILD_ID || '')
+  .split(/[\s,;]+/)
+  .map((id) => id.trim())
+  .filter(Boolean))];
 const parsedPort = Number(process.env.PORT);
 const port = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 3000;
 const maxAuditChannels = 3;
@@ -266,15 +270,28 @@ async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
   const commandNames = new Set(commands.map((command) => command.name));
   const globalRoute = Routes.applicationCommands(client.user.id);
+  const priorityGuildSet = new Set(priorityGuildIds);
+
+  for (const guildId of priorityGuildIds) {
+    try {
+      const guildRoute = Routes.applicationGuildCommands(client.user.id, guildId);
+      await rest.put(guildRoute, { body: commands });
+      console.log(`Registered ${commands.length} slash commands immediately for priority guild ${guildId}.`);
+    } catch (error) {
+      console.error(`Could not register priority guild commands for ${guildId}:`, error.message);
+    }
+  }
+
   // Always publish the complete command set first. Deleting old commands before
   // PUT caused commands to disappear when Discord propagation or a later API
   // request failed midway through startup.
   await rest.put(globalRoute, { body: commands });
-  console.log(`Registered ${commands.length} slash commands globally for all servers.`);
+  console.log(`Registered ${commands.length} slash commands globally for all servers${priorityGuildIds.length ? `; priority guilds: ${priorityGuildIds.length}` : ''}.`);
 
   // Remove only stale guild-scoped copies after the global set is safely live.
   // Cleanup is best-effort and must never prevent global registration.
   for (const guild of client.guilds.cache.values()) {
+    if (priorityGuildSet.has(guild.id)) continue;
     try {
       const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
       const guildCommands = await rest.get(guildRoute);
