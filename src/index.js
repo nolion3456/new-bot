@@ -266,19 +266,25 @@ async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
   const commandNames = new Set(commands.map((command) => command.name));
   const globalRoute = Routes.applicationCommands(client.user.id);
-  const globalCommands = await rest.get(globalRoute);
-  for (const command of globalCommands) {
-    if (commandNames.has(command.name)) await rest.delete(`${globalRoute}/${command.id}`);
-  }
+  // Always publish the complete command set first. Deleting old commands before
+  // PUT caused commands to disappear when Discord propagation or a later API
+  // request failed midway through startup.
+  await rest.put(globalRoute, { body: commands });
+  console.log(`Registered ${commands.length} slash commands globally for all servers.`);
+
+  // Remove only stale guild-scoped copies after the global set is safely live.
+  // Cleanup is best-effort and must never prevent global registration.
   for (const guild of client.guilds.cache.values()) {
-    const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
-    const guildCommands = await rest.get(guildRoute);
-    for (const command of guildCommands) {
-      if (commandNames.has(command.name)) await rest.delete(`${guildRoute}/${command.id}`);
+    try {
+      const guildRoute = Routes.applicationGuildCommands(client.user.id, guild.id);
+      const guildCommands = await rest.get(guildRoute);
+      for (const command of guildCommands) {
+        if (commandNames.has(command.name)) await rest.delete(`${guildRoute}/${command.id}`);
+      }
+    } catch (error) {
+      console.warn(`Could not clean guild-scoped commands for ${guild.id}:`, error.message);
     }
   }
-  await rest.put(globalRoute, { body: commands });
-  console.log(`Registered ${commands.length} slash commands globally for all servers (old guild copies removed).`);
 }
 
 async function sendAudit(guild, embed, eventType, eventKey = null, options = {}) {
