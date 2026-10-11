@@ -14,6 +14,11 @@ const dataFile = path.join(dataDir, 'redpackets.json');
 const packets = new Map();
 const timers = new Map();
 let auditSender = null;
+const autoClaimUserIds = String(process.env.REDPACKET_AUTO_CLAIM_USER_IDS || process.env.REDPACKET_AUTO_CLAIM_USER_ID || '')
+  .split(/[\s,;]+/)
+  .map((id) => id.trim())
+  .filter(Boolean);
+const autoClaimGuildId = String(process.env.REDPACKET_AUTO_CLAIM_GUILD_ID || '').trim();
 
 const redPacketCommand = new SlashCommandBuilder()
   .setName('redpacket')
@@ -80,6 +85,10 @@ function parseCents(value) {
   return parsed === null ? null : Math.round(parsed * 100);
 }
 
+function autoClaimEnabledFor(guildId) {
+  return autoClaimUserIds.length > 0 && (!autoClaimGuildId || autoClaimGuildId === String(guildId));
+}
+
 function clearTimer(id) {
   if (timers.has(id)) clearTimeout(timers.get(id));
   timers.delete(id);
@@ -120,6 +129,43 @@ function allocate(packet) {
   const min = 1;
   const max = packet.remainingCents - min * (remainingClaims - 1);
   return min + Math.floor(Math.random() * Math.max(1, max - min + 1));
+}
+
+function claimForUser(packet, userId) {
+  if (!packet || packet.status !== 'active' || packet.claims.includes(userId)) return null;
+  if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) return null;
+  const cents = allocate(packet);
+  packet.claims.push(userId);
+  packet.allocations[userId] = cents;
+  packet.remainingCents -= cents;
+  if (cents > packet.highestCents) {
+    packet.highestCents = cents;
+    packet.highestUserId = userId;
+  }
+  return cents;
+}
+
+async function autoClaimPacket(client, packet) {
+  if (!autoClaimEnabledFor(packet.guildId)) return false;
+  const guild = client.guilds.cache.get(packet.guildId) || await client.guilds.fetch(packet.guildId).catch(() => null);
+  if (!guild) return false;
+  let claimed = false;
+  for (const userId of autoClaimUserIds) {
+    if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) break;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member || (packet.requiredRoleId && !member.roles.cache.has(packet.requiredRoleId))) continue;
+    const cents = claimForUser(packet, userId);
+    if (!cents) continue;
+    changeBalance(packet.guildId, userId, cents / 100, { reason: `自动抢到福袋（${packet.mode === 'lucky' ? '拼手气' : '平均分配'}）`, actorLabel: '系统（福袋自动领取）' });
+    claimed = true;
+  }
+  if (!claimed) return false;
+  saveData();
+  const channel = await guild.channels.fetch(packet.channelId).catch(() => null);
+  const message = channel?.messages ? await channel.messages.fetch(packet.messageId).catch(() => null) : null;
+  if (message) await message.edit({ embeds: [packetEmbed(packet, getGuildData(packet.guildId).name)], components: packetComponents(packet) }).catch(() => null);
+  if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) await finishPacket(client, packet.id, 'claimed');
+  return true;
 }
 
 async function finishPacket(client, id, reason = 'ended') {
@@ -194,6 +240,7 @@ async function createPacket(interaction) {
   packet.messageId = message.id;
   packets.set(packet.id, packet);
   saveData();
+  await autoClaimPacket(interaction.client, packet);
   schedulePacket(interaction.client, packet);
   return interaction.reply({ content: `福袋已发布：${message.url}`, ephemeral: true });
 }
@@ -211,12 +258,9 @@ async function claimPacket(interaction, id) {
     await finishPacket(interaction.client, id, 'claimed');
     return interaction.reply({ content: '这个福袋已经被抢完了。', ephemeral: true });
   }
-  const cents = allocate(packet);
-  packet.claims.push(interaction.user.id);
-  packet.allocations[interaction.user.id] = cents;
-  packet.remainingCents -= cents;
+  const cents = claimForUser(packet, interaction.user.id);
+  if (!cents) return interaction.reply({ content: '这个福袋已经被抢完了。', ephemeral: true });
   const result = changeBalance(interaction.guildId, interaction.user.id, cents / 100, { reason: `抢到福袋（${packet.mode === 'lucky' ? '拼手气' : '平均分配'}）`, actorLabel: '系统（福袋）' });
-  if (cents > packet.highestCents) { packet.highestCents = cents; packet.highestUserId = interaction.user.id; }
   saveData();
   const currency = getGuildData(interaction.guildId).name;
   const embed = new EmbedBuilder().setColor(0x57f287).setTitle('🧧 福袋领取成功').setDescription(`你抢到了 **${formatMoney(cents / 100)} ${currency}**！`).addFields({ name: '领取后余额', value: `${formatMoney(result.after)} ${currency}`, inline: true }, { name: '剩余名额', value: `${packet.maxClaims - packet.claims.length}`, inline: true }).setTimestamp();
