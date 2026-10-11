@@ -14,7 +14,6 @@ const {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
-const { giveawayCommand, setupGiveaways } = require('./giveaways');
 const { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, formatMoney } = require('./balance');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
@@ -66,7 +65,6 @@ const commands = [
     .setName('audit-channel')
     .setDescription('设置服务器审计日志频道（管理员）')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
-  giveawayCommand,
   balanceCommand,
   balanceNameCommand,
   checkinCommand,
@@ -383,7 +381,7 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('giveaway:') || interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:') || interaction.customId.startsWith('redpacket:'))) return;
+  if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:') || interaction.customId.startsWith('redpacket:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
   try {
@@ -482,8 +480,6 @@ client.on('interactionCreate', async (interaction) => {
           '`/ping` 检查机器人是否在线并显示延迟',
           '`/help` 查看这份帮助信息',
           '`/audit-channel` 打开管理服务器权限专用的私密后台管理面板',
-          '`/giveaway create` 创建抽奖并打开发布前私密设置面板',
-          '`/giveaway end|reroll|list|delete` 管理抽奖活动',
           '`/balance` 查看迷你币余额并打开余额面板',
           '`/balance-name` 管理员修改币名称',
           '`/checkin` 管理员打开私密签到设置并发布面板',
@@ -493,7 +489,7 @@ client.on('interactionCreate', async (interaction) => {
           '`/transfer` 转账迷你币给指定成员，并私讯收款人',
           '`/exchange` 管理员设置并发布公开兑换面板',
           '`/shop` 管理员设置并发布公开商城面板',
-          '`/redpacket create` 管理员发送平均或拼手气福袋，可设置身份组条件和结束时间',
+          '`/redpacket create` 所有成员都可发送平均或拼手气福袋，可设置身份组条件和结束时间',
           '审计面板可为每个后台频道独立选择日志类型，最多 3 个频道',
         ].join('\n'),
       });
@@ -699,7 +695,6 @@ client.on('messageDelete', async (message) => {
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
-setupGiveaways(client);
 setupBalances(client);
 setupCheckins(client);
 setupAuctions(client);

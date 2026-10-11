@@ -5,11 +5,9 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  PermissionFlagsBits,
   SlashCommandBuilder,
 } = require('discord.js');
 const { changeBalance, getBalance, getGuildData, formatMoney, parseMoney } = require('./balance');
-const { canManageGuild } = require('./permissions');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'redpackets.json');
@@ -19,8 +17,7 @@ let auditSender = null;
 
 const redPacketCommand = new SlashCommandBuilder()
   .setName('redpacket')
-  .setDescription('管理员发送福袋活动')
-  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+  .setDescription('发送福袋活动')
   .addSubcommand((subcommand) => subcommand
     .setName('create')
     .setDescription('发送一个可供成员领取的福袋')
@@ -233,7 +230,6 @@ async function claimPacket(interaction, id) {
 
 async function handleRedPacket(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'redpacket') {
-    if (!canManageGuild(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
     if (interaction.options.getSubcommand() === 'create') return createPacket(interaction);
   }
   if (interaction.isButton() && interaction.customId.startsWith('redpacket:claim:')) return claimPacket(interaction, interaction.customId.split(':')[2]);
