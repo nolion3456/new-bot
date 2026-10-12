@@ -78,7 +78,12 @@ function getBalance(guildId, userId) {
 }
 
 function getMiniLeaderboard(guildId, limit = 10) {
-  const balances = getGuildData(guildId).balances;
+  return getLeaderboard(guildId, 'mini', limit);
+}
+
+function getLeaderboard(guildId, currency = 'mini', limit = 10) {
+  const data = getGuildData(guildId);
+  const balances = currency === 'major' ? data.majorBalances : data.balances;
   return Object.entries(balances)
     .map(([userId, amount]) => ({ userId, amount: roundMoney(Number(amount) || 0) }))
     .sort((left, right) => right.amount - left.amount || left.userId.localeCompare(right.userId))
@@ -254,4 +259,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, getMiniLeaderboard, changeBalance, getMajorBalance, changeMajorBalance, getGuildData };
+module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, getMiniLeaderboard, getLeaderboard, changeBalance, getMajorBalance, changeMajorBalance, getGuildData };
