@@ -15,6 +15,7 @@ const {
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
 const { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, formatMoney } = require('./balance');
+const { leaderboardCommand, setupLeaderboard } = require('./leaderboard');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
@@ -71,6 +72,7 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
   balanceCommand,
   balanceNameCommand,
+  leaderboardCommand,
   checkinCommand,
   auctionCommand,
   gambleCommand,
@@ -719,6 +721,7 @@ client.on('messageDelete', async (message) => {
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
 setupBalances(client);
+setupLeaderboard(client);
 setupCheckins(client);
 setupAuctions(client);
 setupGambling(client);

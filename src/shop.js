@@ -39,10 +39,9 @@ function defaultShop() {
 function normalizeProduct(product, fallbackId) {
   const infoItems = Array.isArray(product.infoItems) ? product.infoItems.map((item, index) => ({
     id: String(item.id || `${product.id || fallbackId}-info-${index + 1}`),
-    username: String(item.username || '').slice(0, 200),
-    password: String(item.password || '').slice(0, 200),
-    description: String(item.description || '').slice(0, 1000),
-  })).filter((item) => item.username || item.password || item.description) : [];
+    title: String(item.title || (item.username ? 'Roblox 名称' : '')).slice(0, 200),
+    content: String(item.content || [item.username ? `名称：${item.username}` : '', item.password ? `密码：${item.password}` : '', item.description || ''].filter(Boolean).join('\n')).slice(0, 1000),
+  })).filter((item) => item.title || item.content) : [];
   const normalized = {
     id: String(product.id || fallbackId),
     name: String(product.name || '未命名商品').slice(0, 80),
@@ -189,9 +188,8 @@ function productModal(mode, product = {}) {
 }
 function infoItemModal(productId) {
   return new ModalBuilder().setCustomId(`shop:info:add:${productId}`).setTitle('添加商品资料').addComponents(
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('username').setLabel('Roblox 名称').setPlaceholder('请输入账号名称').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('password').setLabel('密码').setPlaceholder('请输入密码').setStyle(TextInputStyle.Short).setRequired(true)),
-    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('description').setLabel('资料描述（可选）').setPlaceholder('例如：等级、服务器、备注').setStyle(TextInputStyle.Paragraph).setRequired(false)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('title').setLabel('资料主题').setPlaceholder('例如：账号资料、兑换码、序号、使用说明').setMaxLength(200).setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('content').setLabel('资料内容').setPlaceholder('请输入这个主题对应的完整内容').setMaxLength(1000).setStyle(TextInputStyle.Paragraph).setRequired(true)),
   );
 }
 function publicEmbed(shop) {
@@ -397,9 +395,7 @@ async function sendTicketRecord(interaction, ticket) {
 function infoPanelEmbed(ticket, info, index, total) {
   return new EmbedBuilder().setColor(0x5865f2).setTitle(`🔐 商品资料 ${index}/${total}`).setDescription('这是你购买的商品资料，请妥善保存。').addFields(
     { name: '商品', value: ticket.productName, inline: true },
-    { name: 'Roblox 名称', value: info.username || '未提供', inline: false },
-    { name: '密码', value: info.password || '未提供', inline: false },
-    { name: '描述', value: info.description || '无', inline: false },
+    { name: info.title || '资料', value: info.content || '无内容', inline: false },
   ).setFooter({ text: '此资料仅发送到私密商城工单频道' });
 }
 async function deliverTicketInfo(ticket, channel) {
@@ -804,11 +800,10 @@ async function handleShop(interaction) {
     if (!product || !product.infoStorage || product.stock === -1) return interaction.reply({ content: '这个商品没有开启有限数量的资料发放。', ephemeral: true });
     const item = {
       id: `${product.id}-info-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      username: interaction.fields.getTextInputValue('username').trim(),
-      password: interaction.fields.getTextInputValue('password').trim(),
-      description: interaction.fields.getTextInputValue('description')?.trim() || '',
+      title: interaction.fields.getTextInputValue('title').trim(),
+      content: interaction.fields.getTextInputValue('content').trim(),
     };
-    if (!item.username || !item.password) return interaction.reply({ content: 'Roblox 名称和密码不能为空。', ephemeral: true });
+    if (!item.title || !item.content) return interaction.reply({ content: '资料主题和资料内容不能为空。', ephemeral: true });
     product.infoItems.push(item);
     product.stock = product.infoItems.length;
     return interaction.update({ embeds: [adminEmbed(session.shop, session.selectedId)], components: adminComponents(session.shop, session.selectedId) });
