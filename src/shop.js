@@ -301,21 +301,30 @@ function ticketEmbed(ticket) {
     ...(ticket.couponCode ? [{ name: '优惠券', value: `${ticket.couponCode}（-${formatMoney(ticket.discount || 0)}）`, inline: true }] : []),
   ).setFooter({ text: `工单创建时间：${new Date(ticket.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}` });
 }
+function ticketItemsText(ticket) {
+  if (Array.isArray(ticket.items) && ticket.items.length) {
+    return ticket.items.map((item) => `• ${item.name || `商品 ${item.productId}`} × ${item.quantity}`).join('\n').slice(0, 1024);
+  }
+  return `${ticket.productName || '未命名商品'} × ${ticket.quantity || 1}`;
+}
 function reviewPanelEmbed(ticket) {
   return new EmbedBuilder().setColor(0xf1c40f).setTitle('⭐ 订单评价').setDescription('订单已经完成，感谢你的购买！请点击下方按钮填写评价。只有开单成员可以提交。').addFields(
-    { name: '商品', value: ticket.productName, inline: true },
-    { name: '购买成员', value: `<@${ticket.buyerId}>`, inline: true },
-  );
+    { name: '🛍️ 购买商品', value: ticketItemsText(ticket), inline: false },
+    { name: '👤 购买成员', value: `<@${ticket.buyerId}>`, inline: true },
+    { name: '📦 商品总数量', value: String(ticket.quantity || 1), inline: true },
+  ).setFooter({ text: '你的评价将帮助我们持续改进服务' });
 }
 function reviewPanelComponents() {
   return [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:ticket:review').setLabel('填写评价').setEmoji('⭐').setStyle(ButtonStyle.Primary))];
 }
 function reviewResultEmbed(ticket) {
-  return new EmbedBuilder().setColor(0xf1c40f).setTitle('⭐ 订单评价').addFields(
-    { name: '商品', value: ticket.productName, inline: true },
-    { name: '评分', value: `${'⭐'.repeat(ticket.review.rating)}（${ticket.review.rating}/5）`, inline: true },
-    { name: '评价内容', value: ticket.review.comment || '成员未填写文字评价', inline: false },
-  ).setTimestamp(ticket.review.createdAt);
+  const reviewer = ticket.review.reviewerName || ticket.buyerName || '未知成员';
+  const embed = new EmbedBuilder().setColor(0xf1c40f).setTitle('⭐ 商城顾客评价').setDescription('感谢顾客分享购买体验！').addFields(
+    { name: '🛍️ 购买商品', value: ticketItemsText(ticket), inline: false },
+    { name: '⭐ 评分', value: `${'⭐'.repeat(ticket.review.rating)}（${ticket.review.rating}/5）`, inline: true },
+    { name: '💬 评价内容', value: ticket.review.comment || '成员未填写文字评价', inline: false },
+  ).setAuthor({ name: reviewer, iconURL: ticket.review.reviewerAvatarUrl || undefined }).setTimestamp(ticket.review.createdAt);
+  return embed;
 }
 function ticketComponents(ticket) {
   const status = ticketStatus(ticket);
@@ -857,7 +866,15 @@ async function handleShop(interaction) {
     if (!ticket || interaction.user.id !== ticket.buyerId) return interaction.reply({ content: '只有开单者可以填写评价。', ephemeral: true });
     const rating = Number(interaction.fields.getTextInputValue('rating').trim());
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) return interaction.reply({ content: '评分必须是 1 到 5。', ephemeral: true });
-    ticket.review = { rating, comment: interaction.fields.getTextInputValue('comment')?.trim() || '', createdAt: Date.now() }; saveTickets();
+    ticket.review = {
+      rating,
+      comment: interaction.fields.getTextInputValue('comment')?.trim() || '',
+      reviewerId: interaction.user.id,
+      reviewerName: interaction.user.globalName || interaction.user.username || interaction.user.tag,
+      reviewerAvatarUrl: interaction.user.displayAvatarURL({ extension: 'png', size: 128 }),
+      createdAt: Date.now(),
+    };
+    saveTickets();
     await interaction.reply({ content: '评价已提交，谢谢你的反馈！', ephemeral: true });
     const reviewChannel = getShop(interaction.guildId).reviewChannelId ? await interaction.guild.channels.fetch(getShop(interaction.guildId).reviewChannelId).catch(() => null) : null;
     return (reviewChannel?.isTextBased() ? reviewChannel : interaction.channel).send({ embeds: [reviewResultEmbed(ticket)] });
