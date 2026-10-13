@@ -60,11 +60,11 @@ function settingsEmbed(session, currency) {
   return new EmbedBuilder()
     .setColor(0x9b59b6)
     .setTitle('🎮 小游戏设置面板')
-    .setDescription('这是私密管理员面板。调整两个游戏的最低下注金额和中奖概率，完成后点击“确认发布”。')
+    .setDescription('这是私密管理员面板。调整各游戏的最低下注金额和结果概率，完成后点击“确认发布”。猜大小和猜硬币只要实际结果与你的选择一致，就会立即派奖。')
     .addFields(
       { name: '🎰 老司机老虎机', value: `最低下注：${formatMoney(session.slot.price)} ${currency}\n中奖概率：${session.slot.probability}%`, inline: true },
-      { name: '🎲 猜大小', value: `最低下注：${formatMoney(session['high-low'].price)} ${currency}\n中奖概率：${session['high-low'].probability}%`, inline: true },
-      { name: '🪙 猜硬币正反', value: `最低下注：${formatMoney(session.coin.price)} ${currency}\n中奖概率：${session.coin.probability}%`, inline: true },
+      { name: '🎲 猜大小', value: `最低下注：${formatMoney(session['high-low'].price)} ${currency}\n结果吻合概率：${session['high-low'].probability}%`, inline: true },
+      { name: '🪙 猜硬币正反', value: `最低下注：${formatMoney(session.coin.price)} ${currency}\n结果吻合概率：${session.coin.probability}%`, inline: true },
     );
 }
 
@@ -85,7 +85,7 @@ function settingModal(game) {
     .setTitle(game === 'slot' ? '设置老虎机' : game === 'coin' ? '设置猜硬币正反' : '设置猜大小')
     .addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('price').setLabel('最低下注金额').setPlaceholder('例如 10.25').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('probability').setLabel('中奖概率（0-100）').setPlaceholder('例如 35').setStyle(TextInputStyle.Short).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('probability').setLabel(game === 'slot' ? '中奖概率（0-100）' : '结果吻合概率（0-100）').setPlaceholder('例如 35').setStyle(TextInputStyle.Short).setRequired(true)),
     );
 }
 
@@ -186,30 +186,30 @@ async function playGame(interaction, game, choice, amount) {
     ).setTimestamp()], components: [] });
   }
   if (game === 'coin') {
-    const actual = Math.random() < 0.5 ? 'heads' : 'tails';
+    const actual = randomWin(config.probability) ? choice : (choice === 'heads' ? 'tails' : 'heads');
     const matched = actual === choice;
-    const finalWin = matched && randomWin(config.probability);
+    const finalWin = matched;
     const finalPayout = finalWin ? amount * 2 : 0;
     const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout, { reason: '小游戏中奖派奖：猜硬币正反', actorId: interaction.user.id, actorLabel: actor }) : paid;
     return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(finalWin ? 0x57f287 : 0xed4245).setTitle('🪙 迷你币猜硬币正反').addFields(
       { name: '你的选择', value: choice === 'heads' ? '正面' : '反面', inline: true },
       { name: '硬币结果', value: actual === 'heads' ? '正面' : '反面', inline: true },
       { name: '下注金额', value: `${formatMoney(amount)} ${currency}`, inline: true },
-      { name: '结果', value: finalWin ? `中奖，返还 ${formatMoney(finalPayout)} ${currency}` : matched ? '猜对了，但本轮未触发中奖概率' : '猜错，未中奖', inline: true },
+      { name: '结果', value: finalWin ? `猜对了，中奖并返还 ${formatMoney(finalPayout)} ${currency}` : '猜错，未中奖', inline: true },
       { name: '变更后余额', value: `${formatMoney(finalSettled.after)} ${currency}`, inline: false },
     ).setTimestamp()], components: [] });
   }
-  const number = Math.floor(Math.random() * 100) + 1;
-  const actual = number >= 51 ? 'high' : 'low';
+  const actual = randomWin(config.probability) ? choice : (choice === 'high' ? 'low' : 'high');
+  const number = actual === 'high' ? Math.floor(Math.random() * 50) + 51 : Math.floor(Math.random() * 50) + 1;
   const matched = actual === choice;
-  const finalWin = matched && randomWin(config.probability);
+  const finalWin = matched;
   const finalPayout = finalWin ? amount * 2 : 0;
   const finalSettled = finalPayout ? changeBalance(interaction.guildId, interaction.user.id, finalPayout, { reason: '小游戏中奖派奖：猜大小', actorId: interaction.user.id, actorLabel: actor }) : paid;
   return interaction.update({ content: '', embeds: [new EmbedBuilder().setColor(finalWin ? 0x57f287 : 0xed4245).setTitle('🎲 迷你币猜大小').addFields(
     { name: '你的选择', value: choice === 'high' ? '大' : '小', inline: true },
     { name: '系统结果', value: `${number}（${actual === 'high' ? '大' : '小'}）`, inline: true },
     { name: '下注金额', value: `${formatMoney(amount)} ${currency}`, inline: true },
-    { name: '结果', value: finalWin ? `中奖，返还 ${formatMoney(finalPayout)} ${currency}` : matched ? '猜对了，但本轮未触发中奖概率' : '猜错，未中奖', inline: true },
+    { name: '结果', value: finalWin ? `猜对了，中奖并返还 ${formatMoney(finalPayout)} ${currency}` : '猜错，未中奖', inline: true },
     { name: '变更后余额', value: `${formatMoney(finalSettled.after)} ${currency}`, inline: false },
   ).setTimestamp()], components: [] });
 }
