@@ -330,6 +330,20 @@ async function claimPacket(interaction, id) {
   }
 }
 
+function autoClaimPanel(guildId, title, description, color = 0xe67e22) {
+  const rules = activeAutoClaimRules(guildId);
+  const priority = rules.length
+    ? rules.map((rule, index) => `${index + 1}. <@${rule.userId}>｜${rule.expiresAt === null ? '永久' : `到期 <t:${Math.floor(rule.expiresAt / 1000)}:R>`}`).join('\n')
+    : '目前没有设置自动抢福袋成员。';
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`🧧 ${title}`)
+    .setDescription(description)
+    .addFields({ name: '当前抢福袋优先级', value: priority, inline: false })
+    .setFooter({ text: '只有服务器拥有者或机器人管理者可以调整此设置' })
+    .setTimestamp();
+}
+
 async function handleAutoClaimCommand(interaction, subcommand) {
   if (!canManageAutoClaim(interaction)) return interaction.reply({ content: '只有服务器拥有者或配置的机器人管理者可以设置、查看或取消自动抢福袋。', ephemeral: true });
   const guildId = interaction.guildId;
@@ -337,24 +351,23 @@ async function handleAutoClaimCommand(interaction, subcommand) {
   if (subcommand === 'auto-add') {
     const user = interaction.options.getUser('user', true);
     const expiresAt = parseAutoClaimDuration(interaction.options.getString('duration', true));
-    if (expiresAt === undefined) return interaction.reply({ content: '持续时间格式无效，请使用 `10s`、`30m`、`2h`、`1d`，或使用 `-1` 表示永久。', ephemeral: true });
-    if (rules.some((rule) => rule.userId === user.id)) return interaction.reply({ content: `<@${user.id}> 已经在自动抢福袋优先级中，请先取消后再重新添加。`, ephemeral: true });
+    if (expiresAt === undefined) return interaction.reply({ embeds: [autoClaimPanel(guildId, '自动抢福袋设置失败', '持续时间格式无效，请使用 `10s`、`30m`、`2h`、`1d`，或使用 `-1` 表示永久。', 0xed4245)] });
+    if (rules.some((rule) => rule.userId === user.id)) return interaction.reply({ embeds: [autoClaimPanel(guildId, '自动抢福袋设置失败', `<@${user.id}> 已经在自动抢福袋优先级中，请先取消后再重新添加。`, 0xed4245)] });
     rules.push({ userId: user.id, expiresAt, createdAt: Date.now() });
     autoClaimRules.set(guildId, rules);
     saveAutoClaimData();
-    return interaction.reply({ content: `已将 <@${user.id}> 加入自动抢福袋优先级第 ${rules.length} 位。持续时间：${expiresAt === null ? '永久' : `<t:${Math.floor(expiresAt / 1000)}:R>`}。`, ephemeral: true });
+    return interaction.reply({ embeds: [autoClaimPanel(guildId, '已添加自动抢福袋成员', `已将 <@${user.id}> 加入第 **${rules.length}** 位。\n持续时间：${expiresAt === null ? '永久' : `<t:${Math.floor(expiresAt / 1000)}:R>`}。`, 0x57f287)] });
   }
   if (subcommand === 'auto-remove') {
     const user = interaction.options.getUser('user', true);
     const remaining = rules.filter((rule) => rule.userId !== user.id);
-    if (remaining.length === rules.length) return interaction.reply({ content: `<@${user.id}> 不在本服务器的自动抢福袋优先级中。`, ephemeral: true });
+    if (remaining.length === rules.length) return interaction.reply({ embeds: [autoClaimPanel(guildId, '取消自动抢福袋失败', `<@${user.id}> 不在本服务器的自动抢福袋优先级中。`, 0xed4245)] });
     if (remaining.length) autoClaimRules.set(guildId, remaining);
     else autoClaimRules.delete(guildId);
     saveAutoClaimData();
-    return interaction.reply({ content: `已取消 <@${user.id}> 的自动抢福袋设置。`, ephemeral: true });
+    return interaction.reply({ embeds: [autoClaimPanel(guildId, '已取消自动抢福袋成员', `已取消 <@${user.id}> 的自动抢福袋设置。`, 0x57f287)] });
   }
-  const lines = rules.map((rule, index) => `${index + 1}. <@${rule.userId}>｜${rule.expiresAt === null ? '永久' : `到期 <t:${Math.floor(rule.expiresAt / 1000)}:R>`}`);
-  return interaction.reply({ content: lines.length ? `🧧 自动抢福袋优先级\n${lines.join('\n')}` : '目前没有设置自动抢福袋成员。', ephemeral: true });
+  return interaction.reply({ embeds: [autoClaimPanel(guildId, '自动抢福袋优先级', '以下为当前服务器的自动抢福袋顺序。')] });
 }
 
 async function handleRedPacket(interaction) {
