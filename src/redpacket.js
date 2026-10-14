@@ -5,6 +5,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
+  PermissionFlagsBits,
   SlashCommandBuilder,
 } = require('discord.js');
 const { changeBalance, getBalance, getGuildData, formatMoney, parseMoney } = require('./balance');
@@ -149,11 +150,15 @@ async function autoClaimPacket(client, packet) {
   if (!autoClaimEnabledFor(packet.guildId)) return false;
   const guild = client.guilds.cache.get(packet.guildId) || await client.guilds.fetch(packet.guildId).catch(() => null);
   if (!guild) return false;
+  const channel = await guild.channels.fetch(packet.channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.permissionsFor !== 'function') return false;
   let claimed = false;
   for (const userId of autoClaimUserIds) {
     if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) break;
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member || (packet.requiredRoleId && !member.roles.cache.has(packet.requiredRoleId))) continue;
+    const permissions = channel.permissionsFor(member);
+    if (!permissions?.has(PermissionFlagsBits.ViewChannel)) continue;
     const cents = claimForUser(packet, userId);
     if (!cents) continue;
     changeBalance(packet.guildId, userId, cents / 100, { reason: `自动抢到福袋（${packet.mode === 'lucky' ? '拼手气' : '平均分配'}）`, actorLabel: '系统（福袋自动领取）' });
@@ -161,7 +166,6 @@ async function autoClaimPacket(client, packet) {
   }
   if (!claimed) return false;
   saveData();
-  const channel = await guild.channels.fetch(packet.channelId).catch(() => null);
   const message = channel?.messages ? await channel.messages.fetch(packet.messageId).catch(() => null) : null;
   if (message) await message.edit({ embeds: [packetEmbed(packet, getGuildData(packet.guildId).name)], components: packetComponents(packet) }).catch(() => null);
   if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) await finishPacket(client, packet.id, 'claimed');
