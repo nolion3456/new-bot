@@ -8,7 +8,6 @@ const {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } = require('discord.js');
-const { canManageGuild } = require('./permissions');
 const { changeBalance, getBalance, getGuildData, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
@@ -18,11 +17,7 @@ const packets = new Map();
 const timers = new Map();
 const autoClaimRules = new Map();
 let auditSender = null;
-const autoClaimUserIds = String(process.env.REDPACKET_AUTO_CLAIM_USER_IDS || process.env.REDPACKET_AUTO_CLAIM_USER_ID || '')
-  .split(/[\s,;]+/)
-  .map((id) => id.trim())
-  .filter(Boolean);
-const autoClaimGuildId = String(process.env.REDPACKET_AUTO_CLAIM_GUILD_ID || '').trim();
+const botManagerId = String(process.env.BOT_MANAGER_ID || '').trim();
 
 const redPacketCommand = new SlashCommandBuilder()
   .setName('redpacket')
@@ -114,9 +109,7 @@ function parseAutoClaimDuration(value) {
 }
 
 function autoClaimIdsForGuild(guildId) {
-  const envIds = autoClaimEnabledFor(guildId) ? autoClaimUserIds : [];
-  const commandIds = activeAutoClaimRules(guildId).map((rule) => rule.userId);
-  return [...new Set([...envIds, ...commandIds])];
+  return activeAutoClaimRules(guildId).map((rule) => rule.userId);
 }
 
 function normalizePacket(packet) {
@@ -147,8 +140,8 @@ function parseCents(value) {
   return parsed === null ? null : Math.round(parsed * 100);
 }
 
-function autoClaimEnabledFor(guildId) {
-  return autoClaimUserIds.length > 0 && (!autoClaimGuildId || autoClaimGuildId === String(guildId));
+function canManageAutoClaim(interaction) {
+  return Boolean(interaction.guild && (interaction.guild.ownerId === interaction.user.id || (botManagerId && botManagerId === interaction.user.id)));
 }
 
 function clearTimer(id) {
@@ -338,7 +331,7 @@ async function claimPacket(interaction, id) {
 }
 
 async function handleAutoClaimCommand(interaction, subcommand) {
-  if (!canManageGuild(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以设置自动抢福袋。', ephemeral: true });
+  if (!canManageAutoClaim(interaction)) return interaction.reply({ content: '只有服务器拥有者或配置的机器人管理者可以设置、查看或取消自动抢福袋。', ephemeral: true });
   const guildId = interaction.guildId;
   const rules = activeAutoClaimRules(guildId);
   if (subcommand === 'auto-add') {
@@ -360,11 +353,7 @@ async function handleAutoClaimCommand(interaction, subcommand) {
     saveAutoClaimData();
     return interaction.reply({ content: `已取消 <@${user.id}> 的自动抢福袋设置。`, ephemeral: true });
   }
-  const envIds = autoClaimEnabledFor(guildId) ? autoClaimUserIds : [];
-  const lines = [
-    ...envIds.map((userId, index) => `${index + 1}. <@${userId}>｜环境变量优先｜永久`),
-    ...rules.map((rule, index) => `${envIds.length + index + 1}. <@${rule.userId}>｜指令设置｜${rule.expiresAt === null ? '永久' : `到期 <t:${Math.floor(rule.expiresAt / 1000)}:R>`}`),
-  ];
+  const lines = rules.map((rule, index) => `${index + 1}. <@${rule.userId}>｜${rule.expiresAt === null ? '永久' : `到期 <t:${Math.floor(rule.expiresAt / 1000)}:R>`}`);
   return interaction.reply({ content: lines.length ? `🧧 自动抢福袋优先级\n${lines.join('\n')}` : '目前没有设置自动抢福袋成员。', ephemeral: true });
 }
 
