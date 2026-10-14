@@ -8,12 +8,15 @@ const {
   PermissionFlagsBits,
   SlashCommandBuilder,
 } = require('discord.js');
+const { canManageGuild } = require('./permissions');
 const { changeBalance, getBalance, getGuildData, formatMoney, parseMoney } = require('./balance');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'redpackets.json');
+const autoClaimDataFile = path.join(dataDir, 'redpacket-auto-claim.json');
 const packets = new Map();
 const timers = new Map();
+const autoClaimRules = new Map();
 let auditSender = null;
 const autoClaimUserIds = String(process.env.REDPACKET_AUTO_CLAIM_USER_IDS || process.env.REDPACKET_AUTO_CLAIM_USER_ID || '')
   .split(/[\s,;]+/)
@@ -36,6 +39,19 @@ const redPacketCommand = new SlashCommandBuilder()
     .addRoleOption((option) => option.setName('role').setDescription('领取条件身份组（可选）').setRequired(false))
     .addStringOption((option) => option.setName('duration').setDescription('结束时间，例如 10m、2h、1d；留空则直到抢完').setRequired(false)));
 
+redPacketCommand.addSubcommand((subcommand) => subcommand
+  .setName('auto-add')
+  .setDescription('设置指定成员自动抢福袋的优先顺序')
+  .addUserOption((option) => option.setName('user').setDescription('要加入自动抢福袋的成员').setRequired(true))
+  .addStringOption((option) => option.setName('duration').setDescription('持续时间：10s、30m、2h、1d；填写 -1 代表永久').setRequired(true)));
+redPacketCommand.addSubcommand((subcommand) => subcommand
+  .setName('auto-list')
+  .setDescription('查看自动抢福袋优先级'));
+redPacketCommand.addSubcommand((subcommand) => subcommand
+  .setName('auto-remove')
+  .setDescription('取消指定成员的自动抢福袋')
+  .addUserOption((option) => option.setName('user').setDescription('要取消的成员').setRequired(true)));
+
 function setRedPacketAuditSender(sender) {
   auditSender = sender;
 }
@@ -56,6 +72,51 @@ function saveData() {
   const temporary = `${dataFile}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify([...packets.values()], null, 2));
   fs.renameSync(temporary, dataFile);
+}
+
+function loadAutoClaimData() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(autoClaimDataFile, 'utf8'));
+    for (const [guildId, rules] of Object.entries(raw)) {
+      if (Array.isArray(rules)) autoClaimRules.set(guildId, rules.filter((rule) => rule?.userId && (rule.expiresAt === null || Number.isFinite(Number(rule.expiresAt)))));
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Failed to load red packet auto-claim settings:', error.message);
+  }
+}
+
+function saveAutoClaimData() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const temporary = `${autoClaimDataFile}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(autoClaimRules.entries()), null, 2));
+  fs.renameSync(temporary, autoClaimDataFile);
+}
+
+function activeAutoClaimRules(guildId) {
+  const rules = autoClaimRules.get(String(guildId)) || [];
+  const now = Date.now();
+  const active = rules.filter((rule) => rule.expiresAt === null || Number(rule.expiresAt) > now);
+  if (active.length !== rules.length) {
+    if (active.length) autoClaimRules.set(String(guildId), active);
+    else autoClaimRules.delete(String(guildId));
+    saveAutoClaimData();
+  }
+  return active;
+}
+
+function parseAutoClaimDuration(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (text === '-1') return null;
+  const match = text.match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) return undefined;
+  const milliseconds = Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+  return Number.isSafeInteger(milliseconds) && milliseconds >= 1000 && milliseconds <= 365 * 86_400_000 ? Date.now() + milliseconds : undefined;
+}
+
+function autoClaimIdsForGuild(guildId) {
+  const envIds = autoClaimEnabledFor(guildId) ? autoClaimUserIds : [];
+  const commandIds = activeAutoClaimRules(guildId).map((rule) => rule.userId);
+  return [...new Set([...envIds, ...commandIds])];
 }
 
 function normalizePacket(packet) {
@@ -147,13 +208,13 @@ function claimForUser(packet, userId) {
 }
 
 async function autoClaimPacket(client, packet) {
-  if (!autoClaimEnabledFor(packet.guildId)) return false;
+  if (!autoClaimIdsForGuild(packet.guildId).length) return false;
   const guild = client.guilds.cache.get(packet.guildId) || await client.guilds.fetch(packet.guildId).catch(() => null);
   if (!guild) return false;
   const channel = await guild.channels.fetch(packet.channelId).catch(() => null);
   if (!channel?.isTextBased?.() || typeof channel.permissionsFor !== 'function') return false;
   let claimed = false;
-  for (const userId of autoClaimUserIds) {
+  for (const userId of autoClaimIdsForGuild(packet.guildId)) {
     if (packet.claims.length >= packet.maxClaims || packet.remainingCents <= 0) break;
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member || (packet.requiredRoleId && !member.roles.cache.has(packet.requiredRoleId))) continue;
@@ -276,9 +337,42 @@ async function claimPacket(interaction, id) {
   }
 }
 
+async function handleAutoClaimCommand(interaction, subcommand) {
+  if (!canManageGuild(interaction)) return interaction.reply({ content: '只有拥有“管理服务器”权限的成员可以设置自动抢福袋。', ephemeral: true });
+  const guildId = interaction.guildId;
+  const rules = activeAutoClaimRules(guildId);
+  if (subcommand === 'auto-add') {
+    const user = interaction.options.getUser('user', true);
+    const expiresAt = parseAutoClaimDuration(interaction.options.getString('duration', true));
+    if (expiresAt === undefined) return interaction.reply({ content: '持续时间格式无效，请使用 `10s`、`30m`、`2h`、`1d`，或使用 `-1` 表示永久。', ephemeral: true });
+    if (rules.some((rule) => rule.userId === user.id)) return interaction.reply({ content: `<@${user.id}> 已经在自动抢福袋优先级中，请先取消后再重新添加。`, ephemeral: true });
+    rules.push({ userId: user.id, expiresAt, createdAt: Date.now() });
+    autoClaimRules.set(guildId, rules);
+    saveAutoClaimData();
+    return interaction.reply({ content: `已将 <@${user.id}> 加入自动抢福袋优先级第 ${rules.length} 位。持续时间：${expiresAt === null ? '永久' : `<t:${Math.floor(expiresAt / 1000)}:R>`}。`, ephemeral: true });
+  }
+  if (subcommand === 'auto-remove') {
+    const user = interaction.options.getUser('user', true);
+    const remaining = rules.filter((rule) => rule.userId !== user.id);
+    if (remaining.length === rules.length) return interaction.reply({ content: `<@${user.id}> 不在本服务器的自动抢福袋优先级中。`, ephemeral: true });
+    if (remaining.length) autoClaimRules.set(guildId, remaining);
+    else autoClaimRules.delete(guildId);
+    saveAutoClaimData();
+    return interaction.reply({ content: `已取消 <@${user.id}> 的自动抢福袋设置。`, ephemeral: true });
+  }
+  const envIds = autoClaimEnabledFor(guildId) ? autoClaimUserIds : [];
+  const lines = [
+    ...envIds.map((userId, index) => `${index + 1}. <@${userId}>｜环境变量优先｜永久`),
+    ...rules.map((rule, index) => `${envIds.length + index + 1}. <@${rule.userId}>｜指令设置｜${rule.expiresAt === null ? '永久' : `到期 <t:${Math.floor(rule.expiresAt / 1000)}:R>`}`),
+  ];
+  return interaction.reply({ content: lines.length ? `🧧 自动抢福袋优先级\n${lines.join('\n')}` : '目前没有设置自动抢福袋成员。', ephemeral: true });
+}
+
 async function handleRedPacket(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'redpacket') {
-    if (interaction.options.getSubcommand() === 'create') return createPacket(interaction);
+    const subcommand = interaction.options.getSubcommand();
+    if (subcommand === 'create') return createPacket(interaction);
+    if (['auto-add', 'auto-list', 'auto-remove'].includes(subcommand)) return handleAutoClaimCommand(interaction, subcommand);
   }
   if (interaction.isButton() && interaction.customId.startsWith('redpacket:claim:')) return claimPacket(interaction, interaction.customId.split(':')[2]);
   return false;
@@ -286,6 +380,7 @@ async function handleRedPacket(interaction) {
 
 function setupRedPackets(client) {
   loadData();
+  loadAutoClaimData();
   client.on('ready', () => { for (const packet of packets.values()) schedulePacket(client, packet); });
   client.on('interactionCreate', (interaction) => handleRedPacket(interaction).catch((error) => {
     console.error('Red packet interaction failed:', error);
