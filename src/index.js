@@ -14,7 +14,7 @@ const {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
 } = require('discord.js');
-const { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, formatMoney } = require('./balance');
+const { balanceCommand, balanceNameCommand, miniTotalCommand, miniTotalSettingsCommand, setupBalances, setBalanceAuditSender, formatMoney } = require('./balance');
 const { leaderboardCommand, setupLeaderboard } = require('./leaderboard');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
@@ -72,6 +72,8 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
   balanceCommand,
   balanceNameCommand,
+  miniTotalCommand,
+  miniTotalSettingsCommand,
   leaderboardCommand,
   checkinCommand,
   auctionCommand,

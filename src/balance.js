@@ -16,6 +16,7 @@ const { canManageGuild } = require('./permissions');
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'balances.json');
 const guildBalances = new Map();
+const totalSettings = new Map();
 let balanceAuditSender = null;
 
 function roundMoney(value) {
@@ -45,6 +46,22 @@ const balanceNameCommand = new SlashCommandBuilder()
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
   .addStringOption((option) => option.setName('name').setDescription('新的币名称').setMinLength(1).setMaxLength(30).setRequired(true));
 
+const miniTotalCommand = new SlashCommandBuilder()
+  .setName('mini-total')
+  .setDescription('查看本服务器所有成员迷你币余额总数');
+
+const miniTotalSettingsCommand = new SlashCommandBuilder()
+  .setName('mini-total-settings')
+  .setDescription('设置迷你币总额统计的排除成员或身份组（管理员）')
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString())
+  .addStringOption((option) => option.setName('action').setDescription('要执行的操作').setRequired(true).addChoices(
+    { name: '加入排除成员', value: 'add-user' }, { name: '移除排除成员', value: 'remove-user' },
+    { name: '加入排除身份组', value: 'add-role' }, { name: '移除排除身份组', value: 'remove-role' },
+    { name: '查看排除设置', value: 'list' },
+  ))
+  .addUserOption((option) => option.setName('user').setDescription('要排除的成员（成员操作时填写）'))
+  .addRoleOption((option) => option.setName('role').setDescription('要排除的身份组（身份组操作时填写）'));
+
 function loadData() {
   try {
     const raw = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
@@ -54,6 +71,10 @@ function loadData() {
         balances: Object.fromEntries(Object.entries(value.balances || {}).map(([userId, amount]) => [userId, roundMoney(Number(amount) || 0)])),
         majorBalances: Object.fromEntries(Object.entries(value.majorBalances || {}).map(([userId, amount]) => [userId, roundMoney(Number(amount) || 0)])),
       });
+      totalSettings.set(guildId, {
+        excludedUserIds: Array.isArray(value.totalSettings?.excludedUserIds) ? value.totalSettings.excludedUserIds : [],
+        excludedRoleIds: Array.isArray(value.totalSettings?.excludedRoleIds) ? value.totalSettings.excludedRoleIds : [],
+      });
     }
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Failed to load balances:', error.message);
@@ -62,7 +83,11 @@ function loadData() {
 
 function saveData() {
   fs.mkdirSync(dataDir, { recursive: true });
-  const raw = Object.fromEntries(guildBalances.entries());
+  const guildIds = new Set([...guildBalances.keys(), ...totalSettings.keys()]);
+  const raw = Object.fromEntries([...guildIds].map((guildId) => [guildId, {
+    ...getGuildData(guildId),
+    totalSettings: totalSettings.get(guildId) || { excludedUserIds: [], excludedRoleIds: [] },
+  }]));
   const temporary = `${dataFile}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(raw, null, 2));
   fs.renameSync(temporary, dataFile);
@@ -75,6 +100,41 @@ function getGuildData(guildId) {
 
 function getBalance(guildId, userId) {
   return getGuildData(guildId).balances[userId] || 0;
+}
+
+function getTotalSettings(guildId) {
+  if (!totalSettings.has(guildId)) totalSettings.set(guildId, { excludedUserIds: [], excludedRoleIds: [] });
+  return totalSettings.get(guildId);
+}
+
+async function getMiniTotal(guild) {
+  const data = getGuildData(guild.id);
+  const settings = getTotalSettings(guild.id);
+  const members = await guild.members.fetch();
+  let total = 0;
+  let included = 0;
+  for (const member of members.values()) {
+    if (settings.excludedUserIds.includes(member.id) || settings.excludedRoleIds.some((roleId) => member.roles.cache.has(roleId))) continue;
+    total += Number(data.balances[member.id]) || 0;
+    included += 1;
+  }
+  return { total: roundMoney(total), included, memberCount: members.size, settings };
+}
+
+function miniTotalEmbed(guild, result, title = '迷你币总额') {
+  const data = getGuildData(guild.id);
+  return new EmbedBuilder()
+    .setColor(0x3498db)
+    .setTitle(`💰 ${title}`)
+    .setDescription(`当前服务器纳入统计的成员迷你币余额合计为\n**${formatMoney(result.total)} ${data.name}**`)
+    .addFields(
+      { name: '纳入统计成员', value: String(result.included), inline: true },
+      { name: '服务器成员总数', value: String(result.memberCount), inline: true },
+      { name: '排除成员数量', value: String(result.settings.excludedUserIds.length), inline: true },
+      { name: '排除身份组数量', value: String(result.settings.excludedRoleIds.length), inline: true },
+    )
+    .setFooter({ text: '统计包含成员当前的迷你币余额（包括负数余额）' })
+    .setTimestamp();
 }
 
 function getMiniLeaderboard(guildId, limit = 10) {
@@ -181,6 +241,41 @@ async function handleBalanceInteraction(interaction) {
     return interaction.reply({ embeds: [panelEmbed(interaction.guild, target)], components: panelComponents() });
   }
 
+  if (interaction.isChatInputCommand() && interaction.commandName === 'mini-total') {
+    if (!interaction.guild) return interaction.reply({ content: '此指令只能在服务器内使用。', ephemeral: true });
+    const result = await getMiniTotal(interaction.guild);
+    return interaction.reply({ embeds: [miniTotalEmbed(interaction.guild, result)] });
+  }
+
+  if (interaction.isChatInputCommand() && interaction.commandName === 'mini-total-settings') {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限，并且最高身份组必须高于机器人。', ephemeral: true });
+    const settings = getTotalSettings(interaction.guildId);
+    const action = interaction.options.getString('action', true);
+    const user = interaction.options.getUser('user');
+    const role = interaction.options.getRole('role');
+    if (action.endsWith('user')) {
+      if (!user) return interaction.reply({ content: '此操作必须填写 user 成员。', ephemeral: true });
+      const exists = settings.excludedUserIds.includes(user.id);
+      if (action === 'add-user' && !exists) settings.excludedUserIds.push(user.id);
+      if (action === 'remove-user' && exists) settings.excludedUserIds.splice(settings.excludedUserIds.indexOf(user.id), 1);
+      saveData();
+      return interaction.reply({ content: `${action === 'add-user' ? '已将' : '已从排除名单移除'} <@${user.id}>。`, ephemeral: true });
+    }
+    if (action.endsWith('role')) {
+      if (!role) return interaction.reply({ content: '此操作必须填写 role 身份组。', ephemeral: true });
+      const exists = settings.excludedRoleIds.includes(role.id);
+      if (action === 'add-role' && !exists) settings.excludedRoleIds.push(role.id);
+      if (action === 'remove-role' && exists) settings.excludedRoleIds.splice(settings.excludedRoleIds.indexOf(role.id), 1);
+      saveData();
+      return interaction.reply({ content: `${action === 'add-role' ? '已将' : '已从排除名单移除'} <@&${role.id}>。`, ephemeral: true });
+    }
+    const lines = [
+      `排除成员：${settings.excludedUserIds.length ? settings.excludedUserIds.map((id) => `<@${id}>`).join('、') : '无'}`,
+      `排除身份组：${settings.excludedRoleIds.length ? settings.excludedRoleIds.map((id) => `<@&${id}>`).join('、') : '无'}`,
+    ];
+    return interaction.reply({ content: `迷你币总额统计排除设置\n${lines.join('\n')}`, ephemeral: true });
+  }
+
   if (interaction.isChatInputCommand() && interaction.commandName === 'balance-name') {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
     const name = interaction.options.getString('name').trim();
@@ -259,4 +354,4 @@ function setupBalances(client) {
   }));
 }
 
-module.exports = { balanceCommand, balanceNameCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, getMiniLeaderboard, getLeaderboard, changeBalance, getMajorBalance, changeMajorBalance, getGuildData };
+module.exports = { balanceCommand, balanceNameCommand, miniTotalCommand, miniTotalSettingsCommand, setupBalances, setBalanceAuditSender, roundMoney, parseMoney, formatMoney, getBalance, getMiniLeaderboard, getLeaderboard, getMiniTotal, getTotalSettings, changeBalance, getMajorBalance, changeMajorBalance, getGuildData };
