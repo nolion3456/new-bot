@@ -101,6 +101,11 @@ function getShop(guildId) {
   if (!Object.prototype.hasOwnProperty.call(shop, '_guildId')) Object.defineProperty(shop, '_guildId', { value: guildId, writable: true, configurable: true, enumerable: false });
   return shop;
 }
+function cloneShopForSession(guildId, shop) {
+  const copy = JSON.parse(JSON.stringify(shop));
+  Object.defineProperty(copy, '_guildId', { value: guildId, writable: true, configurable: true, enumerable: false });
+  return copy;
+}
 function currencyUnit(shop) { return shop.currency === 'mini' ? getGuildData(shop._guildId).name : '余额'; }
 function getShopBalance(guildId, userId, shop) { return shop.currency === 'mini' ? getBalance(guildId, userId) : getMajorBalance(guildId, userId); }
 function changeShopBalance(guildId, userId, amount, shop, metadata = {}) { return shop.currency === 'mini' ? changeBalance(guildId, userId, amount, metadata) : changeMajorBalance(guildId, userId, amount, metadata); }
@@ -141,7 +146,8 @@ function adminEmbed(shop, selectedId = null) {
   const lines = shop.products.length
     ? shop.products.map((product) => `${product.id}. **${product.name}**｜${formatMoney(product.price)} ${currencyUnit(shop)}｜${productStatus(product)}${product.infoStorage ? `｜已储存资料 ${product.infoItems.length} 条` : ''}${selectedId === product.id ? ' ← 当前选择' : ''}`)
     : ['目前还没有商品，请先点击“上架商品”。'];
-  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription('这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 `-1` 代表无限数量。\n\n' + lines.join('\n')).addFields(
+  const description = `这是私密管理员面板。你可以上架、下架、编辑价格和库存，库存填写 \`-1\` 代表无限数量。\n\n${lines.join('\n')}`;
+  return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 商城管理面板').setDescription(description.length > 4096 ? `${description.slice(0, 4093)}...` : description).addFields(
     { name: '工单分类', value: shop.ticketCategoryId ? `<#${shop.ticketCategoryId}>` : '未设置（自动放在最上方）', inline: true },
     { name: '记录频道', value: shop.recordChannelId ? `<#${shop.recordChannelId}>` : '未设置（生成记录时需要设置）', inline: true },
     { name: '评价频道', value: shop.reviewChannelId ? `<#${shop.reviewChannelId}>` : '未设置（默认发在工单频道）', inline: true },
@@ -447,9 +453,10 @@ function restoreTicketStock(ticket) {
 async function handleShop(interaction) {
   if (interaction.isChatInputCommand() && interaction.commandName === 'shop') {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
-    const shop = JSON.parse(JSON.stringify(await sanitizeShopSettings(interaction.guild, getShop(interaction.guildId))));
+    await interaction.deferReply({ ephemeral: true });
+    const shop = cloneShopForSession(interaction.guildId, await sanitizeShopSettings(interaction.guild, getShop(interaction.guildId)));
     sessions.set(key(interaction), { shop, selectedId: null });
-    return interaction.reply({ embeds: [adminEmbed(shop)], components: adminComponents(shop), ephemeral: true });
+    return interaction.editReply({ embeds: [adminEmbed(shop)], components: adminComponents(shop) });
   }
   if (interaction.isChatInputCommand() && interaction.commandName === 'ticket') {
     if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以使用 `/ticket`。', ephemeral: true });
