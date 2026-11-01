@@ -66,7 +66,7 @@ function loadData() {
         ticketCategoryId: shop.ticketCategoryId || null,
         recordChannelId: shop.recordChannelId || null,
         reviewChannelId: shop.reviewChannelId || null,
-        coupons: (shop.coupons || []).map((coupon) => ({ ...coupon, usedBy: coupon.usedBy || [] })),
+        coupons: (shop.coupons || []).map((coupon) => ({ ...coupon, usedBy: coupon.usedBy || [], expiresAt: coupon.expiresAt ? Number(coupon.expiresAt) : null })),
       });
     }
   } catch (error) {
@@ -78,6 +78,11 @@ function saveData() {
   const temporary = `${dataFile}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(shops.entries()), null, 2));
   fs.renameSync(temporary, dataFile);
+}
+function persistCoupons(guildId, coupons) {
+  const shop = getShop(guildId);
+  shop.coupons = coupons;
+  saveData();
 }
 function loadTickets() {
   try {
@@ -151,7 +156,7 @@ function adminEmbed(shop, selectedId = null) {
     { name: '工单分类', value: shop.ticketCategoryId ? `<#${shop.ticketCategoryId}>` : '未设置（自动放在最上方）', inline: true },
     { name: '记录频道', value: shop.recordChannelId ? `<#${shop.recordChannelId}>` : '未设置（生成记录时需要设置）', inline: true },
     { name: '评价频道', value: shop.reviewChannelId ? `<#${shop.reviewChannelId}>` : '未设置（默认发在工单频道）', inline: true },
-    { name: '优惠券', value: shop.coupons.length ? shop.coupons.map((coupon) => `${coupon.code}（${coupon.type === 'percent' ? `${coupon.value}%` : `${formatMoney(coupon.value)} ${currencyUnit(shop)}`}，${coupon.maxUses ? `剩余/总次数 ${Math.max(0, coupon.maxUses - (coupon.usedBy || []).length)}/${coupon.maxUses}` : '不限次数'}）`).join('\n').slice(0, 1024) : '尚未设置优惠券', inline: false },
+    { name: '优惠券', value: shop.coupons.length ? shop.coupons.map((coupon) => `${coupon.code}（${coupon.type === 'percent' ? `${coupon.value}%` : `${formatMoney(coupon.value)} ${currencyUnit(shop)}`}，${coupon.maxUses ? `剩余/总次数 ${Math.max(0, coupon.maxUses - (coupon.usedBy || []).length)}/${coupon.maxUses}` : '不限次数'}，${coupon.expiresAt ? `到期 <t:${Math.floor(coupon.expiresAt / 1000)}:R>` : '永久'}）`).join('\n').slice(0, 1024) : '尚未设置优惠券', inline: false },
   ).setFooter({ text: `商城支付币种：${currencyUnit(shop)}｜点击“发布公开商城”后，成员可在当前频道逛商城` });
 }
 function adminComponents(shop, selectedId = null) {
@@ -197,6 +202,38 @@ function infoItemModal(productId) {
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('title').setLabel('资料主题').setPlaceholder('例如：账号资料、兑换码、序号、使用说明').setMaxLength(200).setStyle(TextInputStyle.Short).setRequired(true)),
     new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('content').setLabel('资料内容').setPlaceholder('请输入这个主题对应的完整内容').setMaxLength(1000).setStyle(TextInputStyle.Paragraph).setRequired(true)),
   );
+}
+function couponModal(mode = 'new', coupon = null) {
+  const duration = coupon?.expiresAt ? `${coupon.expiresAt > Date.now() ? `${Math.ceil((coupon.expiresAt - Date.now()) / 60_000)}m` : '1m'}` : '';
+  const limits = `${coupon?.perUser ? 'yes' : 'no'}${duration ? `,${duration}` : ''}`;
+  return new ModalBuilder().setCustomId(`shop:coupon-modal:${mode}${coupon?.code ? `:${encodeURIComponent(coupon.code)}` : ''}`).setTitle(mode === 'edit' ? '修改优惠券' : '创建优惠券').addComponents(
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('代码').setValue(coupon?.code || '').setPlaceholder('例如 SAVE10').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('type').setLabel('类型：percent 或 fixed').setValue(coupon?.type || 'percent').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('value').setLabel('折扣数值').setValue(coupon?.value !== undefined ? String(coupon.value) : '').setPlaceholder('percent 填 10，fixed 填金额').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('maxUses').setLabel('总使用次数（0 = 不限）').setValue(coupon?.maxUses !== undefined ? String(coupon.maxUses) : '0').setStyle(TextInputStyle.Short).setRequired(true)),
+    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('limits').setLabel('每人限用/有效期').setValue(limits).setPlaceholder('yes,2h；no,-1 表示永久').setStyle(TextInputStyle.Short).setRequired(true)),
+  );
+}
+function parseCouponLimits(value) {
+  const [perUserText, durationText = ''] = String(value || '').split(',').map((part) => part.trim().toLowerCase());
+  if (!['yes', 'y', '是', 'true', 'no', 'n', '否', 'false'].includes(perUserText)) return null;
+  const perUser = ['yes', 'y', '是', 'true'].includes(perUserText);
+  if (!durationText || durationText === '-1') return { perUser, expiresAt: null };
+  const match = durationText.match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!match) return null;
+  const milliseconds = Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1000 || milliseconds > 365 * 86_400_000) return null;
+  return { perUser, expiresAt: Date.now() + milliseconds };
+}
+function couponManagementEmbed(shop, coupon = null, title = '优惠券管理') {
+  return new EmbedBuilder().setColor(0xf1c40f).setTitle(`🎟️ ${title}`).setDescription(coupon ? `代码：**${coupon.code}**\n类型：${coupon.type}\n折扣：${coupon.value}\n每人限用：${coupon.perUser ? '是' : '否'}\n有效期：${coupon.expiresAt ? `<t:${Math.floor(coupon.expiresAt / 1000)}:R>` : '永久'}\n使用次数：${coupon.maxUses ? `${Math.max(0, coupon.maxUses - (coupon.usedBy || []).length)}/${coupon.maxUses}` : '不限'}` : '请选择要修改或删除的优惠券，或创建一张新优惠券。').setFooter({ text: `当前优惠券数量：${shop.coupons.length}` });
+}
+function couponManagementComponents(shop, coupon = null) {
+  const rows = [];
+  if (shop.coupons.length) rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('shop:coupon:select').setPlaceholder('选择要修改或删除的优惠券').addOptions(shop.coupons.slice(0, 25).map((item) => new StringSelectMenuOptionBuilder().setLabel(item.code.slice(0, 100)).setDescription(`${item.type === 'percent' ? `${item.value}%` : item.value}｜${item.expiresAt ? '限时' : '永久'}`.slice(0, 100)).setValue(item.code).setDefault(coupon?.code === item.code)))));
+  rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:coupon:new').setLabel('新建优惠券').setEmoji('➕').setStyle(ButtonStyle.Success)));
+  if (coupon) rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('shop:coupon:edit').setLabel('修改优惠券').setEmoji('✏️').setStyle(ButtonStyle.Primary), new ButtonBuilder().setCustomId('shop:coupon:delete').setLabel('删除优惠券').setEmoji('🗑️').setStyle(ButtonStyle.Danger)));
+  return rows;
 }
 function publicEmbed(shop) {
   return new EmbedBuilder().setColor(0x9b59b6).setTitle('🛒 服务器商城').setDescription('点击下方“逛商城”按钮，机器人会私密显示商品列表和购买操作。').setFooter({ text: `所有商品使用 ${currencyUnit(shop)} 购买｜购买前会进行二次确认` });
@@ -268,7 +305,7 @@ function couponDiscount(coupon, amount) {
 function validCoupon(shop, code, userId) {
   const coupon = shop.coupons.find((item) => item.code.toLowerCase() === code.toLowerCase() && item.active !== false);
   if (!coupon) return { error: '优惠券不存在或已停用。' };
-  if (coupon.expiresAt && coupon.expiresAt < Date.now()) return { error: '优惠券已过期。' };
+  if (coupon.expiresAt && coupon.expiresAt <= Date.now()) return { error: '优惠券已过期。' };
   if (coupon.maxUses > 0 && (coupon.usedBy || []).length >= coupon.maxUses) return { error: '优惠券已达到使用上限。' };
   if (coupon.perUser && (coupon.usedBy || []).includes(userId)) return { error: '你已经使用过这张优惠券。' };
   return { coupon };
@@ -470,13 +507,7 @@ async function handleShop(interaction) {
     if (!ticket) return interaction.reply({ content: '找不到这个工单记录。', ephemeral: true });
     const parts = interaction.customId.split(':');
     const action = parts[2];
-    if (action === 'coupon') return interaction.showModal(new ModalBuilder().setCustomId('shop:ticket-admin:coupon-modal').setTitle('设置优惠券').addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('代码').setPlaceholder('例如 SAVE10').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('type').setLabel('类型：percent 或 fixed').setValue('percent').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('value').setLabel('折扣数值').setPlaceholder('percent 填 10 代表 10%，fixed 填余额数').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('maxUses').setLabel('总使用次数（0 = 不限）').setValue('0').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('perUser').setLabel('每人限用一次？yes/no').setValue('yes').setStyle(TextInputStyle.Short).setRequired(true)),
-    ));
+    if (action === 'coupon') return interaction.showModal(couponModal('new'));
     if (action === 'record') {
       const result = await sendTicketRecord(interaction, ticket);
       if (!result.sentChannel && !result.sentDm) return interaction.reply({ content: '记录生成失败：请先设置有效的记录频道，并确认买家允许接收私讯。', ephemeral: true });
@@ -725,6 +756,31 @@ async function handleShop(interaction) {
     });
     return interaction.editReply({ content: `购买成功\n\n商品：${current.name}\n购买数量：${quantity}\n商品单价：${formatMoney(current.price)} ${currencyUnit(shop)}\n支付总价：${formatMoney(total)} ${currencyUnit(shop)}\n剩余库存：${current.stock === -1 ? '无限' : current.stock}\n扣款后余额：${formatMoney(getShopBalance(interaction.guildId, interaction.user.id, shop))} ${currencyUnit(shop)}\n\n${ticketChannel ? `工单已建立：<#${ticketChannel.id}>` : '工单建立失败，请联系管理员。'}`, embeds: [], components: [] });
   }
+  if (interaction.isStringSelectMenu() && interaction.customId === 'shop:coupon:select') {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
+    const coupon = session.shop.coupons.find((item) => item.code === interaction.values[0]);
+    if (!coupon) return interaction.reply({ content: '优惠券不存在，请重新打开优惠券管理。', ephemeral: true });
+    session.selectedCouponCode = coupon.code;
+    return interaction.update({ embeds: [couponManagementEmbed(session.shop, coupon)], components: couponManagementComponents(session.shop, coupon) });
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('shop:coupon:')) {
+    if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    if (!session) return interaction.reply({ content: '管理面板已过期，请重新使用 `/shop`。', ephemeral: true });
+    const action = interaction.customId.split(':')[2];
+    const coupon = session.shop.coupons.find((item) => item.code === session.selectedCouponCode);
+    if (action === 'new') return interaction.showModal(couponModal('new'));
+    if (!coupon) return interaction.reply({ content: '请先选择一张优惠券。', ephemeral: true });
+    if (action === 'edit') return interaction.showModal(couponModal('edit', coupon));
+    if (action === 'delete') {
+      session.shop.coupons = session.shop.coupons.filter((item) => item !== coupon);
+      persistCoupons(interaction.guildId, session.shop.coupons);
+      session.selectedCouponCode = null;
+      return interaction.update({ embeds: [couponManagementEmbed(session.shop, null, '优惠券已删除')], components: couponManagementComponents(session.shop) });
+    }
+  }
   if (interaction.isButton() && interaction.customId.startsWith('shop:admin:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '你需要“管理服务器”权限。', ephemeral: true });
     const session = sessions.get(key(interaction));
@@ -738,13 +794,7 @@ async function handleShop(interaction) {
       );
       return interaction.reply({ content: `当前商城支付币种：${currencyUnit(session.shop)}。选择后，新购买和订单调整会使用该币种。已有订单保持创建时币种。`, components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
     }
-    if (action === 'coupon') return interaction.showModal(new ModalBuilder().setCustomId('shop:ticket-admin:coupon-modal').setTitle('设置优惠券').addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('代码').setPlaceholder('例如 SAVE10').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('type').setLabel('类型：percent 或 fixed').setValue('percent').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('value').setLabel('折扣数值').setPlaceholder('percent 填 10 代表 10%，fixed 填余额数').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('maxUses').setLabel('总使用次数（0 = 不限）').setValue('0').setStyle(TextInputStyle.Short).setRequired(true)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('perUser').setLabel('每人限用一次？yes/no').setValue('yes').setStyle(TextInputStyle.Short).setRequired(true)),
-    ));
+    if (action === 'coupon') return interaction.reply({ embeds: [couponManagementEmbed(session.shop)], components: couponManagementComponents(session.shop), ephemeral: true });
     if (action === 'review-settings') {
       const select = new ChannelSelectMenuBuilder().setCustomId('shop:admin:review-channel').setPlaceholder('选择评价发送频道').setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement);
       if (session.shop.reviewChannelId) select.setDefaultChannels(session.shop.reviewChannelId);
@@ -785,19 +835,28 @@ async function handleShop(interaction) {
     session.shop.currency = interaction.values[0] === 'mini' ? 'mini' : 'major';
     return interaction.update({ content: `已选择商城支付币种：${currencyUnit(session.shop)}。请点击管理面板的“发布公开商城”保存设置。`, components: [] });
   }
-  if (interaction.isModalSubmit() && interaction.customId === 'shop:ticket-admin:coupon-modal') {
+  if (interaction.isModalSubmit() && (interaction.customId === 'shop:ticket-admin:coupon-modal' || interaction.customId.startsWith('shop:coupon-modal:'))) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以设置优惠券。', ephemeral: true });
     const code = interaction.fields.getTextInputValue('code').trim().toUpperCase();
     const type = interaction.fields.getTextInputValue('type').trim().toLowerCase();
     const value = Number(interaction.fields.getTextInputValue('value').trim());
     const maxUses = Number(interaction.fields.getTextInputValue('maxUses').trim());
-    const perUser = ['yes', 'y', '是', 'true'].includes(interaction.fields.getTextInputValue('perUser').trim().toLowerCase());
-    if (!code || !['percent', 'fixed'].includes(type) || !Number.isFinite(value) || value <= 0 || (type === 'percent' && value > 100) || !Number.isInteger(maxUses) || maxUses < 0) return interaction.reply({ content: '优惠券参数无效：类型只能是 percent/fixed，折扣必须为正数，percent 不能超过 100，次数必须是非负整数。', ephemeral: true });
-    const shop = getShop(interaction.guildId);
-    if (shop.coupons.some((coupon) => coupon.code.toLowerCase() === code.toLowerCase())) return interaction.reply({ content: '这个优惠券代码已经存在。', ephemeral: true });
-    shop.coupons.push({ code, type, value, maxUses, perUser, active: true, usedBy: [], createdBy: interaction.user.id });
-    saveData();
-    return interaction.reply({ content: `优惠券 **${code}** 已创建。类型：${type}，数值：${value}，总次数：${maxUses || '不限'}，每人限用一次：${perUser ? '是' : '否'}。`, ephemeral: true });
+    const limitsText = interaction.fields.fields.has('limits') ? interaction.fields.getTextInputValue('limits') : `${['yes', 'y', '是', 'true'].includes(interaction.fields.getTextInputValue('perUser').trim().toLowerCase()) ? 'yes' : 'no'},-1`;
+    const limits = parseCouponLimits(limitsText);
+    if (!code || !['percent', 'fixed'].includes(type) || !Number.isFinite(value) || value <= 0 || (type === 'percent' && value > 100) || !Number.isInteger(maxUses) || maxUses < 0 || !limits) return interaction.reply({ content: '优惠券参数无效：类型只能是 percent/fixed，折扣必须为正数，percent 不能超过 100，次数必须是非负整数；每人限用/有效期请填写 `yes,2h` 或 `no,-1`。', ephemeral: true });
+    const session = sessions.get(key(interaction));
+    const shop = session?.shop || getShop(interaction.guildId);
+    const isEdit = interaction.customId.startsWith('shop:coupon-modal:edit:');
+    const oldCode = isEdit ? decodeURIComponent(interaction.customId.split(':').slice(3).join(':')) : null;
+    const existing = oldCode ? shop.coupons.find((coupon) => coupon.code.toLowerCase() === oldCode.toLowerCase()) : null;
+    if (isEdit && !existing) return interaction.reply({ content: '找不到要修改的优惠券。', ephemeral: true });
+    if (shop.coupons.some((coupon) => coupon !== existing && coupon.code.toLowerCase() === code.toLowerCase())) return interaction.reply({ content: '这个优惠券代码已经存在。', ephemeral: true });
+    const coupon = existing || { code, active: true, usedBy: [], createdBy: interaction.user.id };
+    Object.assign(coupon, { code, type, value, maxUses, perUser: limits.perUser, expiresAt: limits.expiresAt });
+    if (!existing) shop.coupons.push(coupon);
+    if (session) session.selectedCouponCode = coupon.code;
+    persistCoupons(interaction.guildId, shop.coupons);
+    return interaction.reply({ embeds: [couponManagementEmbed(shop, coupon, existing ? '优惠券已修改' : '优惠券已创建')], components: couponManagementComponents(shop, coupon), ephemeral: true });
   }
   if (interaction.isModalSubmit() && interaction.customId.startsWith('shop:info:add:')) {
     if (!isManager(interaction)) return interaction.reply({ content: '只有管理员可以添加商品资料。', ephemeral: true });
