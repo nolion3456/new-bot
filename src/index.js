@@ -19,7 +19,7 @@ const { leaderboardCommand, setupLeaderboard } = require('./leaderboard');
 const { checkinCommand, setupCheckins } = require('./checkin');
 const { auctionCommand, setupAuctions } = require('./auction');
 const { gambleCommand, setupGambling } = require('./gambling');
-const { transferCommand, setupTransfers } = require('./transfer');
+const { transferCommand, transferTaxCommand, setupTransfers } = require('./transfer');
 const { exchangeCommand, setupExchange } = require('./exchange');
 const { shopCommand, ticketCommand, setupShop } = require('./shop');
 const { canManageGuild } = require('./permissions');
@@ -79,6 +79,7 @@ const commands = [
   auctionCommand,
   gambleCommand,
   transferCommand,
+  transferTaxCommand,
   exchangeCommand,
   shopCommand,
   ticketCommand,
