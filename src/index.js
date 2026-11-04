@@ -24,6 +24,7 @@ const { exchangeCommand, setupExchange } = require('./exchange');
 const { shopCommand, ticketCommand, setupShop } = require('./shop');
 const { canManageGuild } = require('./permissions');
 const { redPacketCommand, setupRedPackets, setRedPacketAuditSender } = require('./redpacket');
+const { blacklistCommand, setupBlacklist, setBlacklistAuditSender, isBlacklisted, getBlacklistEntry } = require('./blacklist');
 const token = process.env.DISCORD_TOKEN;
 const priorityGuildIds = [...new Set(String(process.env.DISCORD_GUILD_IDS || process.env.DISCORD_GUILD_ID || '')
   .split(/[\s,;]+/)
@@ -49,6 +50,7 @@ const auditEventOptions = [
   { value: 'kick', label: '成员被踢出', description: '显示执行者与被踢成员' },
   { value: 'balanceChange', label: '余额变化', description: '显示余额增加、减少、操作者与变更后余额' },
   { value: 'redPacket', label: '福袋抢完', description: '显示福袋成功领取成员名单' },
+  { value: 'blacklist', label: '全局黑名单处理', description: '显示黑名单原因与封禁/限制结果' },
 ];
 const defaultAuditEvents = new Set(auditEventOptions.map((option) => option.value));
 const moderationAuditEvents = new Set(['mute', 'unmute', 'ban', 'unban', 'kick']);
@@ -84,6 +86,7 @@ const commands = [
   shopCommand,
   ticketCommand,
   redPacketCommand,
+  blacklistCommand,
 ].map((command) => command.toJSON());
 
 const client = new Client({
@@ -274,14 +277,15 @@ function auditPanelPayload(guildIdValue, userId, notice = null) {
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(token);
   const commandNames = new Set(commands.map((command) => command.name));
+  const guildCommands = commands.filter((command) => command.name !== 'blacklist');
   const globalRoute = Routes.applicationCommands(client.user.id);
   const priorityGuildSet = new Set(priorityGuildIds);
 
   for (const guildId of priorityGuildIds) {
     try {
       const guildRoute = Routes.applicationGuildCommands(client.user.id, guildId);
-      await rest.put(guildRoute, { body: commands });
-      console.log(`Registered ${commands.length} slash commands immediately for priority guild ${guildId}.`);
+      await rest.put(guildRoute, { body: guildCommands });
+      console.log(`Registered ${guildCommands.length} slash commands immediately for priority guild ${guildId}.`);
     } catch (error) {
       console.error(`Could not register priority guild commands for ${guildId}:`, error.message);
     }
@@ -409,6 +413,10 @@ client.once('ready', async (readyClient) => {
 });
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isChatInputCommand() && interaction.commandName !== 'blacklist' && isBlacklisted(interaction.user?.id)) {
+    const entry = getBlacklistEntry(interaction.user.id);
+    return interaction.reply({ content: `你已被限制使用本机器人。\n原因：${entry?.reason || '未提供原因'}`, ephemeral: true }).catch(() => null);
+  }
   if ((interaction.isButton() || interaction.isStringSelectMenu() || interaction.isChannelSelectMenu?.() || interaction.isRoleSelectMenu?.()) && (interaction.customId.startsWith('balance:') || interaction.customId.startsWith('checkin:') || interaction.customId.startsWith('auction:') || interaction.customId.startsWith('gamble:') || interaction.customId.startsWith('exchange:') || interaction.customId.startsWith('shop:') || interaction.customId.startsWith('redpacket:'))) return;
   if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isChannelSelectMenu() && !interaction.isStringSelectMenu()) return;
 
@@ -723,6 +731,8 @@ client.on('messageDelete', async (message) => {
 });
 
 process.on('unhandledRejection', (error) => console.error('Unhandled rejection:', error));
+setBlacklistAuditSender(sendAudit);
+setupBlacklist(client);
 setupBalances(client);
 setupLeaderboard(client);
 setupCheckins(client);
